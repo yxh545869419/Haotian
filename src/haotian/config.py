@@ -30,7 +30,7 @@ class Settings(BaseModel):
         description="API key for OpenAI-compatible providers.",
     )
     report_dir: Path = Field(
-        default=Path("reports"),
+        default=Path("data/reports"),
         alias="REPORT_DIR",
         description="Directory where generated reports are written.",
     )
