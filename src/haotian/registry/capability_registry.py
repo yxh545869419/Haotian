@@ -21,6 +21,26 @@ class CapabilityStatus(StrEnum):
     DEPRECATED = "deprecated"
 
 
+class CapabilityApprovalAction(StrEnum):
+    """Supported approval actions from the operations workflow."""
+
+    IGNORE = "ignore"
+    WATCHLIST = "watchlist"
+    POC = "poc"
+    ACTIVATE = "activate"
+    REJECT = "reject"
+
+    @property
+    def resulting_status(self) -> CapabilityStatus:
+        return {
+            CapabilityApprovalAction.IGNORE: CapabilityStatus.DEPRECATED,
+            CapabilityApprovalAction.WATCHLIST: CapabilityStatus.WATCHLIST,
+            CapabilityApprovalAction.POC: CapabilityStatus.POC,
+            CapabilityApprovalAction.ACTIVATE: CapabilityStatus.ACTIVE,
+            CapabilityApprovalAction.REJECT: CapabilityStatus.REJECTED,
+        }[self]
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityRegistryRecord:
     """Persistent registry row."""
@@ -44,7 +64,8 @@ class CapabilityApproval:
     """Review decision for a capability."""
 
     capability_id: str
-    status: CapabilityStatus
+    action: CapabilityApprovalAction
+    resulting_status: CapabilityStatus
     reviewer: str | None = None
     note: str | None = None
     decided_at: str | None = None
@@ -136,16 +157,18 @@ class CapabilityRegistryRepository:
                 """
                 INSERT INTO capability_approvals (
                     capability_id,
-                    status,
+                    action,
+                    resulting_status,
                     reviewer,
                     note,
                     decided_at,
                     snapshot_date
-                ) VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+                ) VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
                 """,
                 (
                     approval.capability_id,
-                    approval.status.value,
+                    approval.action.value,
+                    approval.resulting_status.value,
                     approval.reviewer,
                     approval.note,
                     approval.decided_at,
@@ -164,7 +187,8 @@ class CapabilityRegistryRepository:
         return [
             CapabilityApproval(
                 capability_id=row["capability_id"],
-                status=CapabilityStatus(row["status"]),
+                action=CapabilityApprovalAction(row["action"]),
+                resulting_status=CapabilityStatus(row["resulting_status"]),
                 reviewer=row["reviewer"],
                 note=row["note"],
                 decided_at=row["decided_at"],

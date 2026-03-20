@@ -16,7 +16,15 @@ CAPABILITY_REGISTRY_STATUS_VALUES = (
     "rejected",
     "deprecated",
 )
+CAPABILITY_APPROVAL_ACTION_VALUES = (
+    "ignore",
+    "watchlist",
+    "poc",
+    "activate",
+    "reject",
+)
 STATUS_CHECK_SQL = ", ".join(f"'{value}'" for value in CAPABILITY_REGISTRY_STATUS_VALUES)
+ACTION_CHECK_SQL = ", ".join(f"'{value}'" for value in CAPABILITY_APPROVAL_ACTION_VALUES)
 
 CREATE_TRENDING_REPOS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS trending_repos (
@@ -85,7 +93,8 @@ CREATE_CAPABILITY_APPROVALS_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS capability_approvals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     capability_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ({STATUS_CHECK_SQL})),
+    action TEXT NOT NULL CHECK (action IN ({ACTION_CHECK_SQL})),
+    resulting_status TEXT NOT NULL CHECK (resulting_status IN ({STATUS_CHECK_SQL})),
     reviewer TEXT,
     note TEXT,
     snapshot_date TEXT,
@@ -131,4 +140,52 @@ def initialize_schema(database_url: str | None = None) -> None:
         connection.execute(CREATE_CAPABILITY_REGISTRY_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_INDEX_SQL)
+        _migrate_capability_approvals_table(connection)
         connection.commit()
+
+
+def _migrate_capability_approvals_table(connection: sqlite3.Connection) -> None:
+    columns = {
+        row['name']
+        for row in connection.execute("PRAGMA table_info(capability_approvals)").fetchall()
+    }
+    if not columns:
+        return
+    if 'action' in columns and 'resulting_status' in columns:
+        return
+
+    connection.execute("ALTER TABLE capability_approvals RENAME TO capability_approvals_legacy")
+    connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)
+    legacy_columns = {
+        row['name']
+        for row in connection.execute("PRAGMA table_info(capability_approvals_legacy)").fetchall()
+    }
+    if 'status' in legacy_columns:
+        connection.execute(
+            """
+            INSERT INTO capability_approvals (
+                capability_id,
+                action,
+                resulting_status,
+                reviewer,
+                note,
+                snapshot_date,
+                decided_at
+            )
+            SELECT
+                capability_id,
+                CASE status
+                    WHEN 'active' THEN 'activate'
+                    WHEN 'rejected' THEN 'reject'
+                    WHEN 'deprecated' THEN 'ignore'
+                    ELSE status
+                END AS action,
+                status AS resulting_status,
+                reviewer,
+                note,
+                snapshot_date,
+                decided_at
+            FROM capability_approvals_legacy
+            """
+        )
+    connection.execute("DROP TABLE capability_approvals_legacy")
