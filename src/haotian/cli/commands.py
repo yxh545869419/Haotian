@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import logging
 from pathlib import Path
 
 import typer
@@ -10,7 +11,8 @@ import typer
 from haotian.config import get_settings
 from haotian.registry.capability_registry import CapabilityApprovalAction
 from haotian.services.approval_service import ApprovalService
-from haotian.services.report_service import ReportService, generate_daily_report
+from haotian.services.orchestration_service import OrchestrationService
+from haotian.services.report_service import ReportService
 
 app = typer.Typer(help="Haotian command line interface.")
 run_app = typer.Typer(help="Workflow commands.")
@@ -31,14 +33,30 @@ def run_daily(
         help="Optional override for report output directory.",
     ),
 ) -> None:
-    """Generate the daily markdown report."""
+    """Run the daily MVP pipeline end to end."""
 
+    _configure_logging()
     settings = get_settings()
     target_dir = report_dir or settings.report_dir
     target_dir.mkdir(parents=True, exist_ok=True)
     parsed_date = date.fromisoformat(report_date)
-    path = generate_daily_report(parsed_date) if report_dir is None else ReportService(report_dir=target_dir).generate_daily_report(parsed_date)
-    typer.echo(f"Generated report: {path}")
+    service = OrchestrationService(
+        report_service=ReportService(
+            database_url=settings.database_url,
+            report_dir=target_dir,
+        ),
+        database_url=settings.database_url,
+    )
+    result = service.run_daily_pipeline(parsed_date)
+    typer.echo(f"Repos fetched: {result.repos_ingested}")
+    typer.echo(f"Capabilities identified: {result.capabilities_identified}")
+    typer.echo(f"Alert-worthy updates: {result.alerts_generated}")
+    typer.echo(f"Report path: {result.report_path}")
+    if result.stage_errors:
+        typer.echo("Errors:")
+        for error in result.stage_errors:
+            typer.echo(f"- {error}")
+        raise typer.Exit(code=1)
 
 
 @approval_app.command("apply")
@@ -61,4 +79,11 @@ def approval_apply(
     )
     typer.echo(
         f"Applied {action.value} to {updated.capability_id}; registry status is now {updated.status.value}."
+    )
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )

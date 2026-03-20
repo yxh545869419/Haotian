@@ -15,7 +15,7 @@ class Settings(BaseModel):
     """Runtime settings sourced from environment variables."""
 
     database_url: str = Field(
-        default="sqlite:///./data/haotian.db",
+        default="sqlite:///./data/app.db",
         alias="DATABASE_URL",
         description="Database connection URL.",
     )
