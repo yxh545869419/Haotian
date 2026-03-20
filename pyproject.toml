@@ -13,9 +13,15 @@ authors = [
   { name = "OpenAI Codex" }
 ]
 dependencies = [
+  "beautifulsoup4>=4.12,<5.0",
   "python-dotenv>=1.0.1",
   "pydantic>=2.6,<3.0",
   "typer>=0.12,<1.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0,<9.0",
 ]
 
 [project.scripts]
