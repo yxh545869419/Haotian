@@ -30,6 +30,25 @@ CREATE INDEX IF NOT EXISTS idx_trending_repos_snapshot_period
 ON trending_repos (snapshot_date, period);
 """
 
+CREATE_REPO_CAPABILITIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS repo_capabilities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_full_name TEXT NOT NULL,
+    capability_id TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    reason TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (repo_full_name, capability_id)
+);
+"""
+
+CREATE_REPO_CAPABILITIES_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_repo_capabilities_repo_review
+ON repo_capabilities (repo_full_name, needs_review);
+"""
+
 
 def resolve_sqlite_path(database_url: str | None = None) -> Path:
     """Translate a sqlite URL into a local filesystem path."""
@@ -56,4 +75,6 @@ def initialize_schema(database_url: str | None = None) -> None:
     with get_connection(database_url) as connection:
         connection.execute(CREATE_TRENDING_REPOS_TABLE_SQL)
         connection.execute(CREATE_TRENDING_REPOS_INDEX_SQL)
+        connection.execute(CREATE_REPO_CAPABILITIES_TABLE_SQL)
+        connection.execute(CREATE_REPO_CAPABILITIES_INDEX_SQL)
         connection.commit()
