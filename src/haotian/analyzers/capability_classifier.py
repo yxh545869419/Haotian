@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from haotian.analyzers.capability_normalizer import CapabilityMatch, CapabilityNormalizer
+from haotian.config import get_settings
+from haotian.llm.openai_codex import LLMNormalizedCapability, OpenAICodexCapabilityClient
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "capability_classification.md"
 
@@ -71,21 +73,63 @@ class CapabilityClassificationResult:
 class CapabilityClassifier:
     """Classify repository metadata into a structured capability list."""
 
-    def __init__(self, normalizer: CapabilityNormalizer | None = None) -> None:
+    def __init__(
+        self,
+        normalizer: CapabilityNormalizer | None = None,
+        llm_client: OpenAICodexCapabilityClient | None = None,
+    ) -> None:
         self.normalizer = normalizer or CapabilityNormalizer()
+        self.llm_client = llm_client or self._build_llm_client()
 
     def classify(self, metadata: RepoMetadata) -> CapabilityClassificationResult:
-        """Extract candidate capability phrases and normalize them into taxonomy entries."""
+        """Normalize repository metadata into the approved taxonomy."""
 
         prompt = self.load_prompt()
-        candidates = self._collect_candidates(metadata)
-        normalized = self.normalizer.normalize_many(candidates)
-        capabilities = [ClassifiedCapability.from_match(match) for match in normalized]
+        capabilities = self._classify_with_llm(metadata, prompt)
+        if not capabilities:
+            candidates = self._collect_candidates(metadata)
+            normalized = self.normalizer.normalize_many(candidates)
+            capabilities = [ClassifiedCapability.from_match(match) for match in normalized]
         return CapabilityClassificationResult(
             repo_full_name=metadata.repo_full_name,
             capabilities=capabilities,
             needs_human_confirmation=any(capability.needs_review for capability in capabilities),
             prompt=prompt,
+        )
+
+    def _classify_with_llm(self, metadata: RepoMetadata, prompt: str) -> list[ClassifiedCapability]:
+        if self.llm_client is None:
+            return []
+        try:
+            llm_results = self.llm_client.normalize_capabilities(metadata, prompt)
+        except Exception:
+            return []
+
+        capabilities: list[ClassifiedCapability] = []
+        for item in llm_results:
+            capability = self._build_llm_capability(item)
+            if capability is not None:
+                capabilities.append(capability)
+        deduped: dict[str, ClassifiedCapability] = {}
+        for capability in capabilities:
+            previous = deduped.get(capability.capability_id)
+            if previous is None or capability.confidence > previous.confidence:
+                deduped[capability.capability_id] = capability
+        return sorted(deduped.values(), key=lambda item: (-item.confidence, item.capability_id))
+
+    def _build_llm_capability(self, item: LLMNormalizedCapability) -> ClassifiedCapability | None:
+        metadata = self.normalizer.taxonomy.get(item.capability_id)
+        if metadata is None:
+            return None
+        return ClassifiedCapability(
+            capability_id=item.capability_id,
+            name=str(metadata["name"]),
+            confidence=round(item.confidence, 2),
+            reason=item.reason,
+            summary=item.summary,
+            source_label=item.source_label,
+            original_text=item.original_text,
+            needs_review=item.needs_review,
         )
 
     @staticmethod
@@ -104,3 +148,14 @@ class CapabilityClassifier:
         if metadata.language:
             candidates.append((metadata.language, "language"))
         return candidates
+
+    @staticmethod
+    def _build_llm_client() -> OpenAICodexCapabilityClient | None:
+        settings = get_settings()
+        if settings.llm_provider != "openai" or not settings.openai_api_key:
+            return None
+        return OpenAICodexCapabilityClient(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            model=settings.openai_model,
+        )

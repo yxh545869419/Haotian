@@ -26,8 +26,23 @@ class Settings(BaseModel):
     )
     openai_api_key: str | None = Field(
         default=None,
-        alias="OPENAI_API_KEY",
-        description="API key for OpenAI-compatible providers.",
+        alias="OpenAIAPI",
+        description="API key loaded from the Codex Secret named OpenAIAPI.",
+    )
+    openai_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        alias="OPENAI_BASE_URL",
+        description="Base URL for the OpenAI-compatible API.",
+    )
+    openai_model: str = Field(
+        default="gpt-5-mini",
+        alias="OPENAI_MODEL",
+        description="Default model used for capability extraction.",
+    )
+    telegram_bot_token: str | None = Field(
+        default=None,
+        alias="TelegramBotToken",
+        description="Telegram bot token loaded from the TelegramBotToken secret.",
     )
     report_dir: Path = Field(
         default=Path("data/reports"),
@@ -37,7 +52,7 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls) -> "Settings":
-        """Create settings from current environment variables."""
+        """Create settings from the current runtime, including injected Codex Secrets."""
         import os
 
         values = {

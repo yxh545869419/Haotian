@@ -9,16 +9,22 @@ from pathlib import Path
 import typer
 
 from haotian.config import get_settings
+from haotian.integrations.telegram_bot import start_background_telegram_bot
 from haotian.registry.capability_registry import CapabilityApprovalAction
 from haotian.services.approval_service import ApprovalService
+from haotian.services.chat_service import ChatService
+from haotian.services.cli_chat_service import CLIChatService
 from haotian.services.orchestration_service import OrchestrationService
 from haotian.services.report_service import ReportService
+from haotian.webapp.server import HaotianWebServer
 
 app = typer.Typer(help="Haotian command line interface.")
 run_app = typer.Typer(help="Workflow commands.")
 approval_app = typer.Typer(help="Capability approval commands.")
+serve_app = typer.Typer(help="Local deployment commands.")
 app.add_typer(run_app, name="run")
 app.add_typer(approval_app, name="approval")
+app.add_typer(serve_app, name="serve")
 
 
 @run_app.command("daily")
@@ -82,8 +88,40 @@ def approval_apply(
     )
 
 
+@serve_app.command("web")
+def serve_web(
+    host: str = typer.Option("127.0.0.1", "--host", help="Host interface to bind."),
+    port: int = typer.Option(8765, "--port", help="HTTP port for the local chat UI."),
+) -> None:
+    """Serve a local cross-platform web chat UI."""
+
+    _configure_logging()
+    settings = get_settings()
+    chat_service = ChatService(database_url=settings.database_url)
+    _maybe_enable_telegram(chat_service)
+    HaotianWebServer(chat_service=chat_service).serve(host=host, port=port)
+
+
+@serve_app.command("cli")
+def serve_cli() -> None:
+    """Run an interactive terminal chat session."""
+
+    _configure_logging()
+    settings = get_settings()
+    chat_service = ChatService(database_url=settings.database_url)
+    _maybe_enable_telegram(chat_service)
+    CLIChatService(chat_service=chat_service).run()
+
+
 def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
+
+
+def _maybe_enable_telegram(chat_service: ChatService) -> None:
+    settings = get_settings()
+    if settings.telegram_bot_token:
+        start_background_telegram_bot(settings.telegram_bot_token, chat_service=chat_service)
+        typer.echo("Telegram bot bridge enabled in background.")
