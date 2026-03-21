@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from haotian.analyzers.capability_classifier import CapabilityClassifier, RepoMetadata
+from haotian.collectors.github_repository_metadata import GithubRepositoryMetadataFetcher
 from haotian.collectors.github_trending import GithubTrendingCollector, TrendingRepo
 from haotian.db.schema import get_connection, initialize_schema
 from haotian.registry.capability_registry import (
@@ -50,6 +51,7 @@ class OrchestrationService:
         diff_service: DiffService | None = None,
         registry: CapabilityRegistryRepository | None = None,
         report_service: ReportService | None = None,
+        metadata_fetcher: GithubRepositoryMetadataFetcher | None = None,
         database_url: str | None = None,
     ) -> None:
         self.database_url = database_url
@@ -59,6 +61,7 @@ class OrchestrationService:
         self.diff_service = diff_service or DiffService()
         self.registry = registry or CapabilityRegistryRepository(database_url=database_url)
         self.report_service = report_service or ReportService(database_url=database_url)
+        self.metadata_fetcher = metadata_fetcher or GithubRepositoryMetadataFetcher()
 
     def run_daily_pipeline(self, report_date: date | None = None) -> DailyPipelineResult:
         target_date = report_date or datetime.now(UTC).date()
@@ -194,14 +197,15 @@ class OrchestrationService:
             return CapabilityApprovalAction.WATCHLIST
         return CapabilityApprovalAction.IGNORE
 
-    @staticmethod
-    def _build_repo_metadata(repo: TrendingRepo) -> tuple[RepoMetadata, str, str]:
+    def _build_repo_metadata(self, repo: TrendingRepo) -> tuple[RepoMetadata, str, str]:
+        supplemental = self.metadata_fetcher.fetch(repo.repo_full_name)
         return (
             RepoMetadata(
                 repo_full_name=repo.repo_full_name,
                 description=repo.description,
                 language=repo.language,
-                topics=[repo.language] if repo.language else [],
+                readme=supplemental.readme,
+                topics=[*supplemental.topics, repo.language] if repo.language else list(supplemental.topics),
                 tags=[repo.period],
             ),
             repo.period,

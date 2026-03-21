@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 load_dotenv()
 
@@ -27,6 +27,7 @@ class Settings(BaseModel):
     openai_api_key: str | None = Field(
         default=None,
         alias="OpenAIAPI",
+        validation_alias=AliasChoices("OpenAIAPI", "OPENAIAPI"),
         description="API key loaded from the Codex Secret named OpenAIAPI.",
     )
     openai_base_url: str = Field(
@@ -55,11 +56,20 @@ class Settings(BaseModel):
         """Create settings from the current runtime, including injected Codex Secrets."""
         import os
 
-        values = {
-            field.alias: value
-            for field in cls.model_fields.values()
-            if field.alias and (value := os.getenv(field.alias)) is not None
-        }
+        values = {}
+        for name, field in cls.model_fields.items():
+            aliases = []
+            if field.alias:
+                aliases.append(field.alias)
+            validation_alias = getattr(field, "validation_alias", None)
+            choices = getattr(validation_alias, "choices", None)
+            if choices:
+                aliases.extend(choice for choice in choices if isinstance(choice, str))
+            for alias in aliases:
+                value = os.getenv(alias)
+                if value is not None:
+                    values[field.alias or name] = value
+                    break
         return cls.model_validate(values)
 
 
