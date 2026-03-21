@@ -51,6 +51,8 @@ ON trending_repos (snapshot_date, period);
 CREATE_REPO_CAPABILITIES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS repo_capabilities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date TEXT NOT NULL DEFAULT '',
+    period TEXT NOT NULL DEFAULT 'daily',
     repo_full_name TEXT NOT NULL,
     capability_id TEXT NOT NULL,
     confidence REAL NOT NULL,
@@ -58,13 +60,13 @@ CREATE TABLE IF NOT EXISTS repo_capabilities (
     summary TEXT NOT NULL,
     needs_review INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (repo_full_name, capability_id)
+    UNIQUE (snapshot_date, period, repo_full_name, capability_id)
 );
 """
 
 CREATE_REPO_CAPABILITIES_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS idx_repo_capabilities_repo_review
-ON repo_capabilities (repo_full_name, needs_review);
+CREATE INDEX IF NOT EXISTS idx_repo_capabilities_snapshot_period
+ON repo_capabilities (snapshot_date, period, capability_id);
 """
 
 CREATE_CAPABILITY_REGISTRY_TABLE_SQL = f"""
@@ -108,6 +110,21 @@ CREATE INDEX IF NOT EXISTS idx_capability_approvals_capability_decided
 ON capability_approvals (capability_id, decided_at DESC);
 """
 
+CREATE_CHAT_MESSAGES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    attachments_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_CHAT_MESSAGES_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created
+ON chat_messages (created_at ASC, id ASC);
+"""
+
 
 def resolve_sqlite_path(database_url: str | None = None) -> Path:
     """Translate a sqlite URL into a local filesystem path."""
@@ -140,27 +157,70 @@ def initialize_schema(database_url: str | None = None) -> None:
         connection.execute(CREATE_CAPABILITY_REGISTRY_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_INDEX_SQL)
+        connection.execute(CREATE_CHAT_MESSAGES_TABLE_SQL)
+        connection.execute(CREATE_CHAT_MESSAGES_INDEX_SQL)
+        _migrate_repo_capabilities_table(connection)
         _migrate_capability_approvals_table(connection)
         connection.commit()
 
 
+def _migrate_repo_capabilities_table(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(repo_capabilities)").fetchall()
+    }
+    if not columns or {"snapshot_date", "period"}.issubset(columns):
+        return
+
+    connection.execute("ALTER TABLE repo_capabilities RENAME TO repo_capabilities_legacy")
+    connection.execute(CREATE_REPO_CAPABILITIES_TABLE_SQL)
+    connection.execute(CREATE_REPO_CAPABILITIES_INDEX_SQL)
+    connection.execute(
+        """
+        INSERT INTO repo_capabilities (
+            snapshot_date,
+            period,
+            repo_full_name,
+            capability_id,
+            confidence,
+            reason,
+            summary,
+            needs_review,
+            created_at
+        )
+        SELECT
+            COALESCE(substr(created_at, 1, 10), date('now')) AS snapshot_date,
+            'daily' AS period,
+            repo_full_name,
+            capability_id,
+            confidence,
+            reason,
+            summary,
+            needs_review,
+            created_at
+        FROM repo_capabilities_legacy
+        """
+    )
+    connection.execute("DROP TABLE repo_capabilities_legacy")
+
+
 def _migrate_capability_approvals_table(connection: sqlite3.Connection) -> None:
     columns = {
-        row['name']
+        row["name"]
         for row in connection.execute("PRAGMA table_info(capability_approvals)").fetchall()
     }
     if not columns:
         return
-    if 'action' in columns and 'resulting_status' in columns:
+    if "action" in columns and "resulting_status" in columns:
         return
 
     connection.execute("ALTER TABLE capability_approvals RENAME TO capability_approvals_legacy")
     connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)
     legacy_columns = {
-        row['name']
+        row["name"]
         for row in connection.execute("PRAGMA table_info(capability_approvals_legacy)").fetchall()
     }
-    if 'status' in legacy_columns:
+    if "status" in legacy_columns:
         connection.execute(
             """
             INSERT INTO capability_approvals (
