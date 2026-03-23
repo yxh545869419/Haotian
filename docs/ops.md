@@ -21,19 +21,32 @@
 ModuleNotFoundError: No module named 'dotenv'
 ```
 
-说明当前 Python 环境缺少 `python-dotenv` 依赖。先进入项目根目录，再执行：
+或者：
+
+```text
+ModuleNotFoundError: No module named 'pydantic'
+```
+
+说明当前 Python 环境还没有安装项目运行依赖。先进入项目根目录，再执行：
 
 ```bash
 python -m pip install -e .
 ```
 
-如果你暂时只想补齐这个依赖，也可以执行：
+如果你还需要运行测试，建议一次补齐测试依赖：
 
 ```bash
+python -m pip install -e ".[test]"
+```
+
+如果你暂时只想单独补某个依赖，也可以执行：
+
+```bash
+python -m pip install pydantic
 python -m pip install python-dotenv
 ```
 
-项目现在即使没有安装 `python-dotenv` 也能启动；只是不会自动读取根目录 `.env` 文件，此时你需要手动在当前终端先设置环境变量。
+其中 `pydantic` 属于必需依赖；`python-dotenv` 缺失时项目仍可启动，但不会自动读取根目录 `.env` 文件。
 
 ### 网页版
 
