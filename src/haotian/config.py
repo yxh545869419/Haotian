@@ -5,10 +5,15 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from dotenv import load_dotenv
 from pydantic import AliasChoices, BaseModel, Field
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
 
 
 class Settings(BaseModel):
@@ -26,9 +31,9 @@ class Settings(BaseModel):
     )
     openai_api_key: str | None = Field(
         default=None,
-        alias="OpenAIAPI",
-        validation_alias=AliasChoices("OpenAIAPI", "OPENAIAPI"),
-        description="API key loaded from the Codex Secret named OpenAIAPI.",
+        alias="OPENAI_API_KEY",
+        validation_alias=AliasChoices("OPENAI_API_KEY", "OpenAIAPI", "OPENAIAPI"),
+        description="API key loaded from a local environment variable or a legacy Codex secret name.",
     )
     openai_base_url: str = Field(
         default="https://api.openai.com/v1",

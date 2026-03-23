@@ -29,7 +29,7 @@ class ChatService:
             raise ValueError("Question must not be empty.")
         context = self.build_context()
         if self.llm_client is None:
-            raise RuntimeError("OpenAIAPI secret is required for chat replies.")
+            raise RuntimeError("OPENAI_API_KEY is required for chat replies.")
         normalized_attachments = self._normalize_attachments(attachments or [])
         user_content = question
         if normalized_attachments:
