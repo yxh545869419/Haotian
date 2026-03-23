@@ -48,7 +48,7 @@
 
 - `DATABASE_URL`：数据库连接地址。
 - `LLM_PROVIDER`：大模型提供方标识。
-- `OpenAIAPI`：在 Codex 管理页面中配置的 Secret，用于驱动 OpenAI 主导的 capability taxonomy 归一化。
+- `OPENAI_API_KEY`：本地或部署环境中的 OpenAI API Key，用于驱动 OpenAI 主导的 capability taxonomy 归一化。
 - `REPORT_DIR`：报告输出目录。
 
 ### 3. CLI Layer

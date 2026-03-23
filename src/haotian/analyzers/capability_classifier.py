@@ -220,7 +220,7 @@ class CapabilityClassifier:
         if settings.llm_provider != "openai":
             return f"LLM disabled: unsupported provider '{settings.llm_provider}'."
         if not settings.openai_api_key:
-            return "LLM disabled: OpenAIAPI/OPENAIAPI secret is not configured."
+            return "LLM disabled: OPENAI_API_KEY environment variable is not configured."
         return "LLM disabled: client initialization failed."
 
     @staticmethod
