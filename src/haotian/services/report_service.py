@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+import json
 import sqlite3
 from pathlib import Path
 
@@ -27,6 +28,21 @@ class ReportItem:
     repo_count: int
     needs_manual_attention: bool
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "capability_id": self.capability_id,
+            "canonical_name": self.canonical_name,
+            "source_repos": list(self.source_repos),
+            "periods": list(self.periods),
+            "reason": self.reason,
+            "suggestion": self.suggestion,
+            "base_score": self.base_score,
+            "summary": self.summary,
+            "status": self.status,
+            "repo_count": self.repo_count,
+            "needs_manual_attention": self.needs_manual_attention,
+        }
+
 
 class ReportService:
     """Generate daily markdown reports from collected capability data."""
@@ -44,6 +60,35 @@ class ReportService:
         repo_snapshot = self._load_repo_snapshot(target_date)
         report_path = self.report_dir / f"{target_date.isoformat()}.md"
         report_path.write_text(self._render_markdown(target_date, sections, repo_snapshot), encoding="utf-8")
+        return report_path
+
+    def generate_daily_report_json(self, report_date: date | str) -> Path:
+        target_date = self._normalize_date(report_date)
+        initialize_schema(self.database_url)
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        sections = self._load_sections(target_date)
+        repo_snapshot = self._load_repo_snapshot(target_date)
+        payload = {
+            "report_date": target_date.isoformat(),
+            "summary": {
+                "total_capabilities": len(sections["summary"]),
+                "manual_attention": len(sections["manual_attention"]),
+                "new_capabilities": len(sections["new_capabilities"]),
+                "enhancement_candidates": len(sections["enhancement_candidates"]),
+                "covered": len(sections["covered"]),
+                "risks": len(sections["risks"]),
+            },
+            "repo_snapshot": {
+                key: list(value) for key, value in repo_snapshot.items()
+            },
+            "sections": {
+                key: [item.to_dict() for item in items]
+                for key, items in sections.items()
+                if key != "summary"
+            },
+        }
+        report_path = self.report_dir / f"{target_date.isoformat()}.json"
+        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return report_path
 
     def _load_sections(self, target_date: date) -> dict[str, list[ReportItem]]:

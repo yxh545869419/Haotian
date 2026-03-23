@@ -1,194 +1,136 @@
 # Ops Guide
 
-## 如何运行每日主流程
+## 运行方式
 
-1. 执行 `haotian run daily --date 2026-03-20` 触发统一主流程入口。
-2. MVP 默认使用 SQLite 本地文件 `data/app.db`，并在同一轮中抓取 GitHub Trending 的 `daily` / `weekly` / `monthly` 三个周期，再依次执行 ingest、enrich、analyze、diff、report。
-3. 若已配置 `OPENAI_API_KEY`，分析阶段会优先接入 OpenAI Codex / OpenAI Responses API 直接完成 taxonomy 归一化；未配置或调用失败时会自动回退到本地规则归一化。
-4. diff 阶段不会再等待人工审批，而是基于能力分数自动写入 `watchlist` / `poc` / `active` / `deprecated` 状态，并记录自动配置审计日志。
-5. 生成报告时会把仍需人工介入的项目显式放到 `Manual Attention` 区块。
-6. 命令结束时会输出健康检查摘要，包括本次抓取唯一 repo 数、识别能力数、告警候选数和报告路径。
-7. 默认输出目录是 `data/reports/`，文件名格式为 `YYYY-MM-DD.md`。
-8. 可直接使用 `cat data/reports/2026-03-20.md`、编辑器或任意 Markdown 阅读器查看内容。
+Haotian 现在采用两阶段运行：
 
-## 一键启动脚本
+1. `prepare`：抓取数据并生成 `classification-input.json`
+2. `finalize`：读取 `classification-output.json`，入库并生成报告
 
-仓库根目录提供了一个跨平台的一键启动脚本：`start_haotian.py`。
+同一个命令会自动判断当前应该执行哪个阶段：
 
-如果你在 Windows 本地直接执行脚本时看到下面这种报错：
-
-```text
-ModuleNotFoundError: No module named 'dotenv'
+```bash
+python start_haotian.py --date 2026-03-23
 ```
 
-或者：
+第一次运行通常会得到 `awaiting_classification`。
 
-```text
-ModuleNotFoundError: No module named 'pydantic'
-```
+## 标准操作流程
 
-说明当前 Python 环境还没有安装项目运行依赖。先进入项目根目录，再执行：
+### 1. 安装依赖
 
 ```bash
 python -m pip install -e .
 ```
 
-如果你还需要运行测试，建议一次补齐测试依赖：
+如果还要跑测试：
 
 ```bash
 python -m pip install -e ".[test]"
 ```
 
-如果你暂时只想单独补某个依赖，也可以执行：
+### 2. 生成待分类工件
 
 ```bash
-python -m pip install pydantic
-python -m pip install python-dotenv
+python start_haotian.py --date 2026-03-23
 ```
 
-其中 `pydantic` 属于必需依赖；`python-dotenv` 缺失时项目仍可启动，但不会自动读取根目录 `.env` 文件。
+检查输出中的这些字段：
 
-### 网页版
+- `status`
+- `classification_input`
+- `classification_output`
+- `run_summary`
+
+### 3. 让 Codex 写入分类结果
+
+Codex 需要：
+
+- 读取 `classification_input`
+- 读取 [`docs/capability-taxonomy.md`](capability-taxonomy.md)
+- 在同目录写入 `classification-output.json`
+
+要求：
+
+- 顶层必须是 JSON array
+- 每个 repo 只能出现一次
+- `capability_id` 必须是 taxonomy 中已有的 id
+- `confidence` 必须在 `0` 到 `1` 之间
+
+### 4. 完成最终入库与报告生成
+
+再次执行同一个命令：
 
 ```bash
-python start_haotian.py --mode web --host 127.0.0.1 --port 8765
+python start_haotian.py --date 2026-03-23
 ```
 
-### 命令行版
+成功后会得到：
+
+- `data/reports/2026-03-23.md`
+- `data/reports/2026-03-23.json`
+- `data/runs/2026-03-23/run-summary.json`
+
+## 常用检查
+
+运行全部测试：
 
 ```bash
-python start_haotian.py --mode cli
+python -m pytest -q
 ```
 
-Telegram 不再作为单独启动模式存在。只要启动网页版或命令行版，并且已配置 `TelegramBotToken`，系统就会自动在后台同时连上 Telegram Bot；回答仍然复用 `OPENAI_API_KEY`。
+查看最近一次 Markdown 报告：
 
-## 本地网页对话部署（Windows / Linux / Ubuntu）
-
-Haotian 现在支持在本机启动一个轻量网页对话页面，默认监听一个相对不常用的端口 `8765`。
-
-### 1. 准备 OpenAI API Key
-
-本地环境统一使用 `OPENAI_API_KEY`；为了兼容旧配置，项目仍可读取 `OpenAIAPI` / `OPENAIAPI`。
-
-#### 方式 A：使用 `.env` 文件（推荐）
-
-1. 在项目根目录复制模板：
-
-   ```bash
-   copy .env.example .env
-   ```
-
-   如果你使用的是 PowerShell，也可以执行：
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-2. 编辑 `.env`，填入你自己的 Key：
-
-   ```env
-   OPENAI_API_KEY=sk-xxxxx
-   ```
-
-3. 确认 `.gitignore` 已经忽略 `.env`，不要执行 `git add .env`。
-
-#### 方式 B：只在当前终端设置，不落盘
-
-`cmd.exe`：
-
-```cmd
-set OPENAI_API_KEY=sk-xxxxx
-python start_haotian.py --mode web
+```bash
+type data\\reports\\2026-03-23.md
 ```
 
-PowerShell：
+PowerShell:
 
 ```powershell
-$env:OPENAI_API_KEY="sk-xxxxx"
-python start_haotian.py --mode web
+Get-Content data/reports/2026-03-23.md
 ```
 
-这种方式不会把密钥写进仓库文件，更不需要上传到 GitHub。
-
-#### 方式 C：设置为当前用户的 Windows 持久环境变量
-
-PowerShell：
+查看最近一次 JSON 报告：
 
 ```powershell
-[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-xxxxx", "User")
+Get-Content data/runs/2026-03-23/run-summary.json
 ```
 
-设置完成后，重新打开一个新的终端窗口再启动 Haotian。
+## 常见问题
 
-### 2. 如何避免把 API Key 上传到 GitHub
+### 缺少运行依赖
 
-1. 把密钥放在 `.env` 或系统环境变量里，不要写进 `.py`、`.md`、`.json` 等会提交的文件。
-2. 本仓库的 `.gitignore` 已经忽略 `.env`，所以正常情况下 `.env` 不会被提交。
-3. 提交前可执行 `git status`，确认没有出现 `.env`。
-4. 如果你误提交过密钥，需要立刻删除并轮换这个 Key。
-
-### 3. 启动网页服务
-
-跨平台推荐命令如下：
-
-```bash
-PYTHONPATH=src python -m haotian.main serve web --host 127.0.0.1 --port 8765
-```
-
-如果已经通过 `pip install -e .` 安装了 CLI，也可以直接执行：
-
-```bash
-haotian serve web --host 127.0.0.1 --port 8765
-```
-
-### 4. 浏览器访问
-
-启动后，在浏览器打开：
+如果看到：
 
 ```text
-http://127.0.0.1:8765
+Haotian 缺少运行依赖，当前无法启动。
 ```
 
-### 5. 按需修改端口
-
-如果 `8765` 被占用，可自行改成其他端口，例如：
+请在项目根目录重新执行：
 
 ```bash
-PYTHONPATH=src python -m haotian.main serve web --host 127.0.0.1 --port 9631
+python -m pip install -e .
 ```
 
-Windows、Linux、Ubuntu 本地部署时都可使用同一套参数；区别只在于你如何启动 Python 或已安装的 CLI。
+### 没有生成报告
 
-网页版启动后，左侧会显示 `对话 / 技能 / 配置` 三个页面；右侧对话区支持显示全部履历、一键删除、输入问题以及上传文件/图片等附件。
+如果 `status` 是 `awaiting_classification`，说明流程仍停在第一阶段。需要先让 Codex 写入 `classification-output.json`，再重新运行命令。
 
-## Cron 示例
+### 分类输出校验失败
 
-默认建议每天 **中国时间（Asia/Shanghai）10:00** 执行一次。对应的 UTC 时间是 **02:00**。
+优先检查：
 
-```cron
-0 2 * * * cd /workspace/Haotian && /root/.pyenv/shims/haotian run daily >> data/logs/daily_pipeline.log 2>&1
-```
+- 是否是合法 JSON
+- `repo_full_name` 是否在 `classification-input.json` 中出现过
+- `capability_id` 是否来自 taxonomy
+- `needs_review` 是否是布尔值
 
-如果你的服务器已经设置为中国时区，也可以直接写成：
+## 不再支持的旧入口
 
-```cron
-0 10 * * * cd /workspace/Haotian && /root/.pyenv/shims/haotian run daily >> data/logs/daily_pipeline.log 2>&1
-```
+以下能力已经移除：
 
-如果后续需要调整执行时间，只需要修改 cron 表达式中的分钟和小时字段即可。
-
-如果希望补跑指定日期，可改为：
-
-```bash
-haotian run daily --date 2026-03-20
-```
-
-## 如何执行审批命令（可选人工覆盖）
-
-1. 使用 `haotian approval apply --capability browser_automation --action poc` 对能力项发起审批。
-2. 可选参数包括：
-   - `--reviewer <name>`：记录审批人。
-   - `--note <text>`：记录审批原因或备注。
-   - `--snapshot-date YYYY-MM-DD`：关联某次日报/快照日期。
-3. 支持的审批动作有 `ignore`、`watchlist`、`poc`、`activate`、`reject`。
-4. 每次审批都会写入 `capability_approvals` 审计表，并同步更新 `capability_registry` 中对应能力项的状态。
+- 网页聊天
+- 交互式 CLI 聊天
+- Telegram bridge
+- Python 内直接调用 OpenAI API 分类

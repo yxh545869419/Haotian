@@ -170,6 +170,17 @@ class CapabilityNormalizer:
                 deduped[match.capability_id] = match
         return sorted(deduped.values(), key=lambda match: (-match.confidence, match.capability_id))
 
+    def is_known_capability(self, capability_id: str) -> bool:
+        """Return whether a capability id exists in the taxonomy."""
+
+        return capability_id in self.taxonomy
+
+    def capability_name(self, capability_id: str) -> str:
+        """Return the canonical display name for a taxonomy id."""
+
+        metadata = self.taxonomy[capability_id]
+        return str(metadata["name"])
+
     def _build_synonym_lookup(self) -> dict[str, str]:
         lookup: dict[str, str] = {}
         for capability_id, metadata in self.taxonomy.items():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -21,27 +22,24 @@ def _missing_dependency_message(missing_module: str) -> str:
     )
 
 
-def _load_commands():
+def _load_runner():
     try:
-        from haotian.cli.commands import serve_cli, serve_web  # noqa: E402
+        from haotian.runner import run_once  # noqa: E402
     except ModuleNotFoundError as exc:
         missing_module = exc.name or "unknown dependency"
         raise SystemExit(_missing_dependency_message(missing_module)) from exc
-    return serve_cli, serve_web
+    return run_once
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="One-click launcher for Haotian local modes.")
-    parser.add_argument("--mode", choices=["web", "cli"], default="web", help="Startup mode.")
-    parser.add_argument("--host", default="127.0.0.1", help="Host for web mode.")
-    parser.add_argument("--port", type=int, default=8765, help="Port for web mode.")
+    parser = argparse.ArgumentParser(description="Run one Haotian skill workflow cycle.")
+    parser.add_argument("--date", default=None, help="Optional report date (YYYY-MM-DD).")
     args = parser.parse_args()
-    serve_cli, serve_web = _load_commands()
-
-    if args.mode == "web":
-        serve_web(host=args.host, port=args.port)
-        return
-    serve_cli()
+    run_once = _load_runner()
+    summary = run_once(report_date=args.date)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if summary["status"] == "failed":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

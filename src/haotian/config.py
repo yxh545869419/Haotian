@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 try:
     from dotenv import load_dotenv
@@ -24,36 +24,15 @@ class Settings(BaseModel):
         alias="DATABASE_URL",
         description="Database connection URL.",
     )
-    llm_provider: str = Field(
-        default="openai",
-        alias="LLM_PROVIDER",
-        description="LLM provider identifier.",
-    )
-    openai_api_key: str | None = Field(
-        default=None,
-        alias="OPENAI_API_KEY",
-        validation_alias=AliasChoices("OPENAI_API_KEY", "OpenAIAPI", "OPENAIAPI"),
-        description="API key loaded from a local environment variable or a legacy Codex secret name.",
-    )
-    openai_base_url: str = Field(
-        default="https://api.openai.com/v1",
-        alias="OPENAI_BASE_URL",
-        description="Base URL for the OpenAI-compatible API.",
-    )
-    openai_model: str = Field(
-        default="gpt-5-mini",
-        alias="OPENAI_MODEL",
-        description="Default model used for capability extraction.",
-    )
-    telegram_bot_token: str | None = Field(
-        default=None,
-        alias="TelegramBotToken",
-        description="Telegram bot token loaded from the TelegramBotToken secret.",
-    )
     report_dir: Path = Field(
         default=Path("data/reports"),
         alias="REPORT_DIR",
         description="Directory where generated reports are written.",
+    )
+    run_dir: Path = Field(
+        default=Path("data/runs"),
+        alias="RUN_DIR",
+        description="Directory where staged run artifacts are written.",
     )
 
     @classmethod
@@ -84,4 +63,5 @@ def get_settings() -> Settings:
 
     settings = Settings.from_env()
     settings.report_dir.mkdir(parents=True, exist_ok=True)
+    settings.run_dir.mkdir(parents=True, exist_ok=True)
     return settings

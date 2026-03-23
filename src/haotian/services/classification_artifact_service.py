@@ -1,0 +1,151 @@
+"""Read/write helpers for staged Codex classification artifacts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+from pathlib import Path
+from typing import Any
+
+from haotian.analyzers.capability_normalizer import CapabilityNormalizer
+
+
+@dataclass(frozen=True, slots=True)
+class ClassifiedCapabilityRecord:
+    """One capability classification produced by Codex."""
+
+    capability_id: str
+    confidence: float
+    reason: str
+    summary: str
+    needs_review: bool
+    source_label: str = "codex"
+
+
+@dataclass(frozen=True, slots=True)
+class RepoClassificationRecord:
+    """Classified capabilities for a single repository."""
+
+    repo_full_name: str
+    capabilities: tuple[ClassifiedCapabilityRecord, ...]
+
+
+class ClassificationArtifactService:
+    """Manage staged input/output artifacts for the Codex classification step."""
+
+    def __init__(
+        self,
+        *,
+        base_dir: Path | str = Path("data/runs"),
+        taxonomy_path: str = "docs/capability-taxonomy.md",
+        normalizer: CapabilityNormalizer | None = None,
+    ) -> None:
+        self.base_dir = Path(base_dir)
+        self.taxonomy_path = taxonomy_path
+        self.normalizer = normalizer or CapabilityNormalizer()
+
+    def run_dir(self, report_date: str) -> Path:
+        target = self.base_dir / report_date
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def classification_input_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "classification-input.json"
+
+    def classification_output_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "classification-output.json"
+
+    def run_summary_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "run-summary.json"
+
+    def write_classification_input(self, *, report_date: str, items: list[dict[str, object]]) -> Path:
+        target = self.classification_input_path(report_date)
+        payload = {
+            "schema_version": 1,
+            "report_date": report_date,
+            "taxonomy_path": self.taxonomy_path,
+            "expected_output_filename": "classification-output.json",
+            "items": items,
+        }
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
+    def write_run_summary(self, *, report_date: str, summary: dict[str, object]) -> Path:
+        target = self.run_summary_path(report_date)
+        target.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
+    def read_classification_output(self, path: Path) -> list[RepoClassificationRecord]:
+        if not path.exists():
+            raise FileNotFoundError(f"Classification output not found: {path}")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError("Classification output must be a JSON array.")
+
+        records: list[RepoClassificationRecord] = []
+        seen_repositories: set[str] = set()
+        for index, raw_item in enumerate(payload):
+            if not isinstance(raw_item, dict):
+                raise ValueError(f"Classification output item #{index} must be an object.")
+            repo_full_name = self._require_non_empty_string(raw_item, "repo_full_name", index=index)
+            if repo_full_name in seen_repositories:
+                raise ValueError(f"Duplicate classification output for repo '{repo_full_name}'.")
+            seen_repositories.add(repo_full_name)
+            capabilities_raw = raw_item.get("capabilities")
+            if not isinstance(capabilities_raw, list):
+                raise ValueError(f"Repo '{repo_full_name}' must include a capabilities array.")
+            capabilities = tuple(
+                self._parse_capability(repo_full_name=repo_full_name, raw_item=item, index=cap_index)
+                for cap_index, item in enumerate(capabilities_raw)
+            )
+            records.append(RepoClassificationRecord(repo_full_name=repo_full_name, capabilities=capabilities))
+        return records
+
+    def _parse_capability(
+        self,
+        *,
+        repo_full_name: str,
+        raw_item: object,
+        index: int,
+    ) -> ClassifiedCapabilityRecord:
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"Capability entry #{index} for repo '{repo_full_name}' must be an object.")
+        capability_id = self._require_non_empty_string(raw_item, "capability_id", repo_full_name=repo_full_name, index=index)
+        if not self.normalizer.is_known_capability(capability_id):
+            raise ValueError(f"Repo '{repo_full_name}' uses unknown capability_id '{capability_id}'.")
+        confidence = raw_item.get("confidence")
+        if not isinstance(confidence, int | float):
+            raise ValueError(f"Repo '{repo_full_name}' capability '{capability_id}' must include numeric confidence.")
+        normalized_confidence = round(float(confidence), 2)
+        if not 0.0 <= normalized_confidence <= 1.0:
+            raise ValueError(f"Repo '{repo_full_name}' capability '{capability_id}' confidence must be within [0, 1].")
+        reason = self._require_non_empty_string(raw_item, "reason", repo_full_name=repo_full_name, capability_id=capability_id)
+        summary = self._require_non_empty_string(raw_item, "summary", repo_full_name=repo_full_name, capability_id=capability_id)
+        needs_review = raw_item.get("needs_review")
+        if not isinstance(needs_review, bool):
+            raise ValueError(f"Repo '{repo_full_name}' capability '{capability_id}' must include boolean needs_review.")
+        source_label = raw_item.get("source_label", "codex")
+        if not isinstance(source_label, str) or not source_label.strip():
+            raise ValueError(f"Repo '{repo_full_name}' capability '{capability_id}' must include a non-empty source_label.")
+        return ClassifiedCapabilityRecord(
+            capability_id=capability_id,
+            confidence=normalized_confidence,
+            reason=reason,
+            summary=summary,
+            needs_review=needs_review,
+            source_label=source_label.strip(),
+        )
+
+    @staticmethod
+    def _require_non_empty_string(
+        raw_item: dict[str, Any],
+        field_name: str,
+        **context: object,
+    ) -> str:
+        value = raw_item.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            label = ", ".join(f"{key}={value}" for key, value in context.items())
+            suffix = f" ({label})" if label else ""
+            raise ValueError(f"Missing non-empty string field '{field_name}'{suffix}.")
+        return value.strip()

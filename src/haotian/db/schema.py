@@ -110,21 +110,6 @@ CREATE INDEX IF NOT EXISTS idx_capability_approvals_capability_decided
 ON capability_approvals (capability_id, decided_at DESC);
 """
 
-CREATE_CHAT_MESSAGES_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS chat_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    attachments_json TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
-CREATE_CHAT_MESSAGES_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS idx_chat_messages_created
-ON chat_messages (created_at ASC, id ASC);
-"""
-
 
 def resolve_sqlite_path(database_url: str | None = None) -> Path:
     """Translate a sqlite URL into a local filesystem path."""
@@ -157,8 +142,6 @@ def initialize_schema(database_url: str | None = None) -> None:
         connection.execute(CREATE_CAPABILITY_REGISTRY_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_INDEX_SQL)
-        connection.execute(CREATE_CHAT_MESSAGES_TABLE_SQL)
-        connection.execute(CREATE_CHAT_MESSAGES_INDEX_SQL)
         _migrate_repo_capabilities_table(connection)
         _migrate_capability_approvals_table(connection)
         connection.commit()

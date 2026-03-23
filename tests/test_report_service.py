@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from haotian.db.schema import get_connection, initialize_schema
@@ -114,3 +115,12 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert "Source Repos (1): `acme/browser-bot`" in content
     assert "Periods: `daily, weekly`" in content
     assert "Manual Attention: NO" in content
+
+    json_path = ReportService(database_url=database_url, report_dir=report_dir).generate_daily_report_json("2026-03-20")
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+    assert payload["report_date"] == "2026-03-20"
+    assert payload["summary"]["total_capabilities"] == 1
+    assert payload["repo_snapshot"]["new"] == ["acme/browser-bot", "acme/extractor"]
+    assert payload["sections"]["covered"] == []
+    assert payload["sections"]["enhancement_candidates"][0]["capability_id"] == "browser_automation"

@@ -1,123 +1,133 @@
-# Haotian 技术架构设计
+# Haotian 技术架构
 
 ## 目标
 
-本次初始化聚焦于建立一个可扩展的 Python 3.11+ CLI 工程骨架，用于承载未来的 `run daily` 每日主流程。当前阶段重点是：
+Haotian 的当前形态是一个 skill-first 仓库：
 
-- 明确项目打包与命令入口。
-- 将环境变量配置集中管理。
-- 为后续数据库接入、LLM 调用与报告生成预留扩展点。
-- 提供仓库内可维护的技术设计说明。
+- 只在显式调用 skill 时运行
+- Python 负责确定性流程
+- Codex 负责 taxonomy 分类推理
+- 最终产物稳定落盘为 Markdown / JSON
 
-## 目录结构
+## 核心组件
+
+### 1. Collectors
+
+- `src/haotian/collectors/github_trending.py`
+- `src/haotian/collectors/github_repository_metadata.py`
+
+职责：
+
+- 抓取 GitHub Trending
+- 读取 README 与 topics
+- 保持原始抓取与补充元数据的确定性输入
+
+### 2. Persistence
+
+- `src/haotian/db/schema.py`
+- `src/haotian/services/ingest_service.py`
+- `src/haotian/registry/capability_registry.py`
+
+职责：
+
+- 初始化本地 SQLite
+- 写入 `trending_repos`
+- 写入 `repo_capabilities`
+- 维护 `capability_registry` 与 `capability_approvals`
+
+### 3. Staged classification artifacts
+
+- `src/haotian/services/classification_artifact_service.py`
+
+职责：
+
+- 写入 `classification-input.json`
+- 校验 `classification-output.json`
+- 写入 `run-summary.json`
+
+### 4. Orchestration
+
+- `src/haotian/services/orchestration_service.py`
+
+职责：
+
+- 第一阶段：收集数据并生成待分类工件
+- 第二阶段：读取 Codex 输出，写回数据库
+- 调用 diff 与 report 服务生成最终结果
+
+### 5. Reports
+
+- `src/haotian/services/report_service.py`
+
+职责：
+
+- 生成 `data/reports/YYYY-MM-DD.md`
+- 生成 `data/reports/YYYY-MM-DD.json`
+
+### 6. Runner / Entrypoints
+
+- `src/haotian/runner.py`
+- `src/haotian/main.py`
+- `start_haotian.py`
+- `SKILL.md`
+
+职责：
+
+- 提供稳定的 skill-facing 入口
+- 自动判断当前是“准备分类”还是“完成报告”
+- 把阶段状态写回 `run-summary.json`
+
+## 数据流
+
+### 第一阶段：Prepare
+
+1. 运行 `python start_haotian.py`
+2. Python 抓取 Trending、补充元数据、写入本地 SQLite
+3. Python 生成 `data/runs/YYYY-MM-DD/classification-input.json`
+4. 返回 `awaiting_classification`
+
+### 第二阶段：Classify
+
+1. Codex 读取 `classification-input.json`
+2. Codex 读取 [`docs/capability-taxonomy.md`](capability-taxonomy.md)
+3. Codex 写入 `classification-output.json`
+
+### 第三阶段：Finalize
+
+1. 再次运行 `python start_haotian.py`
+2. Python 校验 `classification-output.json`
+3. Python 写入 `repo_capabilities`
+4. Python 更新 `capability_registry`
+5. Python 生成 Markdown / JSON 报告
+
+## 目录与产物
 
 ```text
-.
-├── .env.example
-├── docs/
-│   └── architecture.md
-├── pyproject.toml
-└── src/
-    └── haotian/
-        ├── __init__.py
-        ├── config.py
-        ├── main.py
-        └── cli/
-            ├── __init__.py
-            └── commands.py
+data/
+├── app.db
+├── reports/
+│   ├── YYYY-MM-DD.md
+│   └── YYYY-MM-DD.json
+└── runs/
+    └── YYYY-MM-DD/
+        ├── classification-input.json
+        ├── classification-output.json
+        └── run-summary.json
 ```
 
-## 架构分层
+## 设计约束
 
-### 1. Packaging / Distribution
+- 不再内置 Web UI、对话 CLI、Telegram bridge
+- 不再从 Python 直接调用 OpenAI API
+- 不再依赖 `OPENAI_API_KEY`
+- capability id 必须来自本地 taxonomy，不允许运行时发明新 id
 
-- 使用 `pyproject.toml` 作为统一项目配置入口。
-- 基于 `setuptools` 进行打包，兼容常见 Python 工具链。
-- 通过 `project.scripts` 暴露 `haotian` CLI 命令。
+## 失败处理
 
-### 2. Configuration Layer
-
-`src/haotian/config.py` 负责：
-
-- 读取 `.env` 与系统环境变量。
-- 对配置项进行结构化建模。
-- 暴露缓存后的 `get_settings()`，避免重复解析环境变量。
-- 在启动时确保报告输出目录存在。
-
-当前规划的核心配置包括：
-
-- `DATABASE_URL`：数据库连接地址。
-- `LLM_PROVIDER`：大模型提供方标识。
-- `OPENAI_API_KEY`：本地或部署环境中的 OpenAI API Key，用于驱动 OpenAI 主导的 capability taxonomy 归一化。
-- `REPORT_DIR`：报告输出目录。
-
-### 3. CLI Layer
-
-`src/haotian/cli/commands.py` 负责统一管理命令行命令：
-
-- 顶层命令空间：`haotian`
-- 子命令组：`run`
-- 预留主流程命令：`haotian run daily`
-
-当前 `run daily` 仅输出配置与占位信息，后续可以演进为：
-
-1. 读取数据源。
-2. 执行指标计算与数据聚合。
-3. 调用 LLM 生成分析结论。
-4. 输出 Markdown / HTML / JSON 报告。
-
-### 4. Application Entrypoint
-
-`src/haotian/main.py` 提供统一入口，职责保持极简：
-
-- 导入 CLI app。
-- 提供 `main()` 函数供脚本入口调用。
-- 支持 `python -m haotian.main` 与安装后的 `haotian` 命令两种运行方式。
-
-## 后续扩展建议
-
-### 数据层
-
-建议后续新增：
-
-- `src/haotian/db/`：数据库连接、Repository、迁移管理。
-- `src/haotian/models/`：领域对象与数据模型。
-
-### LLM 集成层
-
-建议后续新增：
-
-- `src/haotian/llm/`：按 Provider 封装统一接口。
-- Provider 适配器：`openai.py`、`azure.py`、`anthropic.py` 等。
-
-### 报告生成层
-
-建议后续新增：
-
-- `src/haotian/reports/`：模板、导出器、文件命名规范。
-- 支持多格式导出（Markdown、HTML、PDF、JSON）。
-
-### 工作流编排层
-
-建议后续新增：
-
-- `src/haotian/workflows/`：将 `daily` 主流程拆分为独立步骤。
-- 每一步保持单一职责，方便测试与重试。
-
-## 配置与安全原则
-
-- 敏感信息仅通过环境变量或密钥管理系统注入，不写入源码。
-- `.env.example` 只保留占位示例，不包含真实密钥。
-- CLI 默认输出应避免打印完整密钥内容。
-
-## 测试建议
-
-初始化完成后，建议优先补充：
-
-1. `config.py` 的环境变量解析测试。
-2. CLI 命令调用测试。
-3. `run daily` 工作流的集成测试。
+- 如果第一阶段失败，`run-summary.json` 会记录 `stage_errors`
+- 如果缺少 `classification-output.json`，流程会停在 `awaiting_classification`
+- 如果 `classification-output.json` 非法，第二阶段会失败并给出校验错误
 
 ## 结论
 
-当前工程已具备最小可运行骨架，可作为后续“数据库 + LLM + 报告生成”主流程的稳定起点。后续迭代应围绕模块解耦、配置统一、命令职责清晰三个方向逐步扩展。
+Haotian 现在的边界非常清晰：Codex 负责推理分类，Python 负责可重复、可验证、可落盘的本地流程。这让仓库本身能够自然作为 skill 使用，而不是再叠加一层聊天产品壳。

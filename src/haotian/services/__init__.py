@@ -1,7 +1,17 @@
 """Application services."""
 
-from .chat_service import ChatReply, ChatService
-from .cli_chat_service import CLIChatService
-from .orchestration_service import DailyPipelineResult, OrchestrationService
+from .classification_artifact_service import (
+    ClassificationArtifactService,
+    ClassifiedCapabilityRecord,
+    RepoClassificationRecord,
+)
+from .orchestration_service import ClassificationInputBuildResult, DailyPipelineResult, OrchestrationService
 
-__all__ = ["CLIChatService", "ChatReply", "ChatService", "DailyPipelineResult", "OrchestrationService"]
+__all__ = [
+    "ClassificationArtifactService",
+    "ClassificationInputBuildResult",
+    "ClassifiedCapabilityRecord",
+    "DailyPipelineResult",
+    "OrchestrationService",
+    "RepoClassificationRecord",
+]

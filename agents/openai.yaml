@@ -1,0 +1,4 @@
+interface:
+  display_name: "Haotian"
+  short_description: "Refresh and classify AI capability intelligence"
+  default_prompt: "Run the Haotian workflow, classify the staged repositories with the local taxonomy, finalize the reports, and summarize the latest findings."
