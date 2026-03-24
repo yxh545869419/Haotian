@@ -1,0 +1,2 @@
+Copyright 2026 Example Corp.
+All rights reserved.

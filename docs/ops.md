@@ -15,6 +15,8 @@ python start_haotian.py --date 2026-03-23
 
 第一次运行通常会得到 `awaiting_classification`。
 
+这类运行会先在 `TMP_REPO_DIR` 下创建临时 clone，按边界限制做 probe，然后把 `analysis_depth`、`matched_files`、`probe_summary` 和 `evidence_snippets` 写进运行快照。分析完成后会尝试删除临时 clone，通常会成功；如果清理失败，临时工作区可能会保留，并会通过 cleanup warnings / cleanup_completed state 暴露。
+
 ## 标准操作流程
 
 ### 1. 安装依赖
@@ -42,6 +44,13 @@ python start_haotian.py --date 2026-03-23
 - `classification_output`
 - `run_summary`
 
+这些分析字段不在 runner 的直接输出里，而是在 `classification_input` 对应的 staged artifact 中：
+
+- `analysis_depth`
+- `matched_files`
+- `probe_summary`
+- `evidence_snippets`
+
 ### 3. 让 Codex 写入分类结果
 
 Codex 需要：
@@ -56,6 +65,9 @@ Codex 需要：
 - 每个 repo 只能出现一次
 - `capability_id` 必须是 taxonomy 中已有的 id
 - `confidence` 必须在 `0` 到 `1` 之间
+- `reason` 和 `summary` 使用中文
+- 优先依据仓库证据，而不是 README 的单独陈述
+- 遇到 `fallback` 分析时，在 `reason` 里明确说明
 
 ### 4. 完成最终入库与报告生成
 
@@ -70,6 +82,8 @@ python start_haotian.py --date 2026-03-23
 - `data/reports/2026-03-23.md`
 - `data/reports/2026-03-23.json`
 - `data/runs/2026-03-23/run-summary.json`
+
+报告中的能力条目会带上 evidence-backed sections，通常包括分析深度、命中文件和证据摘录；如果看到 `fallback analysis`，说明至少部分贡献证据来自 fallback analysis。优先查看 `analysis_depth`、`matched_files` 和 `evidence_snippets`，再判断这次保留了多少证据。
 
 ## 常用检查
 
@@ -94,7 +108,7 @@ Get-Content data/reports/2026-03-23.md
 查看最近一次 JSON 报告：
 
 ```powershell
-Get-Content data/runs/2026-03-23/run-summary.json
+Get-Content data/reports/2026-03-23.json
 ```
 
 ## 常见问题
@@ -125,6 +139,10 @@ python -m pip install -e .
 - `repo_full_name` 是否在 `classification-input.json` 中出现过
 - `capability_id` 是否来自 taxonomy
 - `needs_review` 是否是布尔值
+
+### 深度分析预算耗尽
+
+如果仓库数量超过 `MAX_DEEP_ANALYSIS_REPOS`，后续仓库会自动进入 fallback analysis。此时部分分析会退化为保底证据，适合保守分类，不适合强行推断；请结合 `analysis_depth`、`matched_files` 和 `evidence_snippets` 判断证据保留程度。
 
 ## 不再支持的旧入口
 

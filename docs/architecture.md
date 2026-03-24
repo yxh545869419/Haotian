@@ -45,17 +45,32 @@ Haotian 的当前形态是一个 skill-first 仓库：
 - 校验 `classification-output.json`
 - 写入 `run-summary.json`
 
-### 4. Orchestration
+### 4. Repository analysis snapshot
+
+- `src/haotian/services/repository_workspace_service.py`
+- `src/haotian/services/repository_probe_service.py`
+- `src/haotian/services/repository_analysis_service.py`
+
+职责：
+
+- 把目标仓库克隆到 `TMP_REPO_DIR` 下的临时目录
+- 只对代表性文件做 bounded probing，受 `MAX_REPO_PROBE_FILES`、`MAX_REPO_PROBE_FILE_BYTES` 和 `MAX_EVIDENCE_SNIPPETS` 约束
+- 产出并持久化 `analysis_depth`、`matched_files`、`probe_summary`、`evidence_snippets` 和 `fallback_used`
+- 分析结束后尝试删除临时 clone，通常会成功；失败时会保留临时工作区并通过清理状态暴露
+- 当仓库预算用尽、根目录不可用或探测失败时，切换到 fallback analysis
+
+### 5. Orchestration
 
 - `src/haotian/services/orchestration_service.py`
 
 职责：
 
 - 第一阶段：收集数据并生成待分类工件
+- 第二阶段前：执行仓库分析快照并把证据写入本地运行产物
 - 第二阶段：读取 Codex 输出，写回数据库
 - 调用 diff 与 report 服务生成最终结果
 
-### 5. Reports
+### 6. Reports
 
 - `src/haotian/services/report_service.py`
 
@@ -63,8 +78,9 @@ Haotian 的当前形态是一个 skill-first 仓库：
 
 - 生成 `data/reports/YYYY-MM-DD.md`
 - 生成 `data/reports/YYYY-MM-DD.json`
+- 把分析深度、命中文件和证据摘录渲染成 evidence-backed sections
 
-### 6. Runner / Entrypoints
+### 7. Runner / Entrypoints
 
 - `src/haotian/runner.py`
 - `src/haotian/main.py`
@@ -83,14 +99,16 @@ Haotian 的当前形态是一个 skill-first 仓库：
 
 1. 运行 `python start_haotian.py`
 2. Python 抓取 Trending、补充元数据、写入本地 SQLite
-3. Python 生成 `data/runs/YYYY-MM-DD/classification-input.json`
-4. 返回 `awaiting_classification`
+3. Python 把目标仓库克隆到临时目录并执行 bounded probing
+4. Python 生成 `data/runs/YYYY-MM-DD/classification-input.json`
+5. Python 尝试删除临时 clone，通常会清理成功；如果失败，会保留临时工作区并返回 `awaiting_classification`
 
 ### 第二阶段：Classify
 
 1. Codex 读取 `classification-input.json`
-2. Codex 读取 [`docs/capability-taxonomy.md`](capability-taxonomy.md)
-3. Codex 写入 `classification-output.json`
+2. Codex 重点查看 `analysis_depth`、`matched_files`、`probe_summary` 和 `evidence_snippets`
+3. Codex 读取 [`docs/capability-taxonomy.md`](capability-taxonomy.md)
+4. Codex 写入 `classification-output.json`
 
 ### 第三阶段：Finalize
 
@@ -98,7 +116,7 @@ Haotian 的当前形态是一个 skill-first 仓库：
 2. Python 校验 `classification-output.json`
 3. Python 写入 `repo_capabilities`
 4. Python 更新 `capability_registry`
-5. Python 生成 Markdown / JSON 报告
+5. Python 生成带证据摘录的 Markdown / JSON 报告
 
 ## 目录与产物
 

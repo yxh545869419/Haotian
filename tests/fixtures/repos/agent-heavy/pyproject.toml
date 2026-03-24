@@ -1,0 +1,5 @@
+[project]
+name = "agent-heavy"
+version = "0.1.0"
+description = "A code-heavy repository with agent workflows."
+dependencies = ["pydantic"]

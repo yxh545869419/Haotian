@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import subprocess
 from datetime import date
+from pathlib import Path
 
 from haotian.collectors.github_trending import TrendingRepo
+from haotian.services.repository_analysis_service import EvidenceSnippet as AnalysisEvidenceSnippet
+from haotian.services.repository_analysis_service import RepositoryAnalysisResult
+from haotian.services.repository_analysis_service import RepositoryAnalysisService
+from haotian.services.repository_probe_service import RepositoryProbeService
 from haotian.registry.capability_registry import CapabilityRegistryRecord
 from haotian.registry.capability_registry import CapabilityRegistryRepository, CapabilityStatus
 from haotian.services.classification_artifact_service import ClassificationArtifactService
 from haotian.services.orchestration_service import OrchestrationService
 from haotian.services.report_service import ReportService
+from haotian.db.schema import get_connection
 
 
 class StubCollector:
@@ -70,25 +78,178 @@ class StubMetadataFetcher:
                 readme="Data extraction pipeline. Workflow orchestration across OCR and parsing jobs.",
                 topics=("ocr", "automation"),
             ),
+            "acme/alpha": RepositoryMetadataPayload(readme="Alpha repo.", topics=("alpha",)),
+            "acme/bravo": RepositoryMetadataPayload(readme="Bravo repo.", topics=("bravo",)),
+            "acme/charlie": RepositoryMetadataPayload(readme="Charlie repo.", topics=("charlie",)),
         }
         return payloads[repo_full_name]
 
 
-def build_service(tmp_path):
+class StubRepositoryAnalysisService:
+    def __init__(self, results_by_repo: dict[str, RepositoryAnalysisResult]) -> None:
+        self.results_by_repo = results_by_repo
+        self.calls: list[tuple[str, bool]] = []
+
+    def analyze_repository(
+        self,
+        *,
+        repo_full_name: str,
+        repo_url: str,
+        allow_deep_analysis: bool = True,
+        report_date: date | None = None,
+    ) -> RepositoryAnalysisResult:
+        del repo_url, report_date
+        self.calls.append((repo_full_name, allow_deep_analysis))
+        result = self.results_by_repo[repo_full_name]
+        if allow_deep_analysis:
+            return result
+        return RepositoryAnalysisResult(
+            repo_full_name=result.repo_full_name,
+            repo_url=result.repo_url,
+            analysis_depth="fallback",
+            clone_strategy="skipped-by-budget",
+            clone_started=False,
+            analysis_completed=False,
+            cleanup_attempted=False,
+            cleanup_required=False,
+            cleanup_completed=False,
+            fallback_used=True,
+            root_files=(),
+            matched_files=(),
+            matched_keywords=(),
+            architecture_signals=(),
+            probe_summary=f"Skipped deep analysis for {repo_full_name} because the deep-analysis budget was exhausted.",
+            evidence_snippets=(),
+            analysis_limits=("skipped due to deep-analysis budget",),
+        )
+
+
+def make_layered_result(repo_full_name: str, *, repo_url: str = "https://github.com/acme/demo") -> RepositoryAnalysisResult:
+    return RepositoryAnalysisResult(
+        repo_full_name=repo_full_name,
+        repo_url=repo_url,
+        analysis_depth="layered",
+        clone_strategy="shallow-clone",
+        clone_started=True,
+        analysis_completed=True,
+        cleanup_attempted=True,
+        cleanup_required=True,
+        cleanup_completed=True,
+        fallback_used=False,
+        root_files=("README.md", "pyproject.toml"),
+        matched_files=("README.md", "pyproject.toml", "main.py", "workflow.py"),
+        matched_keywords=("README*", "pyproject.toml", "main*", "workflow*"),
+        architecture_signals=("documentation-first", "entrypoint-driven", "workflow-orchestration"),
+        probe_summary="Layered analysis complete.",
+        evidence_snippets=(
+            AnalysisEvidenceSnippet(
+                path="README.md",
+                excerpt="Overview",
+                why_it_matters="Shows the repository purpose.",
+            ),
+        ),
+        analysis_limits=(),
+    )
+
+
+def build_service(
+    tmp_path,
+    *,
+    repository_analysis_service: RepositoryAnalysisService | StubRepositoryAnalysisService | None = None,
+    collector: StubCollector | None = None,
+    repository_tmp_dir: Path | None = None,
+    max_deep_analysis_repos: int | None = None,
+):
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     report_dir = tmp_path / "reports"
     run_dir = tmp_path / "runs"
     return OrchestrationService(
-        collector=StubCollector(),
+        collector=collector or StubCollector(),
         metadata_fetcher=StubMetadataFetcher(),
         artifact_service=ClassificationArtifactService(base_dir=run_dir),
         report_service=ReportService(database_url=database_url, report_dir=report_dir),
+        repository_analysis_service=repository_analysis_service,
+        repository_tmp_dir=repository_tmp_dir,
+        max_deep_analysis_repos=max_deep_analysis_repos,
         database_url=database_url,
     )
 
 
+class BudgetCollector:
+    def fetch_trending(self, period: str) -> list[TrendingRepo]:
+        fixtures = {
+            "daily": [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period="daily",
+                    rank=1,
+                    repo_full_name="acme/alpha",
+                    repo_url="https://github.com/acme/alpha",
+                    description="Alpha repo.",
+                    language="Python",
+                    stars=100,
+                    forks=10,
+                )
+            ],
+            "weekly": [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period="weekly",
+                    rank=1,
+                    repo_full_name="acme/bravo",
+                    repo_url="https://github.com/acme/bravo",
+                    description="Bravo repo.",
+                    language="Python",
+                    stars=90,
+                    forks=9,
+                )
+            ],
+            "monthly": [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period="monthly",
+                    rank=1,
+                    repo_full_name="acme/charlie",
+                    repo_url="https://github.com/acme/charlie",
+                    description="Charlie repo.",
+                    language="Python",
+                    stars=80,
+                    forks=8,
+                )
+            ],
+        }
+        return fixtures[period]
+
+
+class MutableCollector:
+    def __init__(self, repo_full_names: list[str]) -> None:
+        self.repo_full_names = repo_full_names
+
+    def fetch_trending(self, period: str) -> list[TrendingRepo]:
+        return [
+            TrendingRepo(
+                snapshot_date="2026-03-20",
+                period=period,
+                rank=index + 1,
+                repo_full_name=repo_full_name,
+                repo_url=f"https://github.com/{repo_full_name}",
+                description=f"{repo_full_name} description.",
+                language="Python",
+                stars=100 - index,
+                forks=10 - index,
+            )
+            for index, repo_full_name in enumerate(self.repo_full_names)
+        ]
+
+
 def test_build_classification_input_writes_repo_metadata(tmp_path) -> None:
-    service = build_service(tmp_path)
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result("acme/browser-bot", repo_url="https://github.com/acme/browser-bot"),
+            "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
+        }
+    )
+    service = build_service(tmp_path, repository_analysis_service=analysis_service)
 
     result = service.build_classification_input(date(2026, 3, 20))
 
@@ -96,14 +257,435 @@ def test_build_classification_input_writes_repo_metadata(tmp_path) -> None:
     assert result.repos_ingested == 2
     assert result.repository_items == 2
     assert result.stage_errors == []
+    assert result.deep_analyzed_repos == 2
+    assert result.fallback_repos == 0
+    assert result.skipped_due_to_budget == 0
+    assert result.cleanup_warnings == 0
     assert payload["report_date"] == "2026-03-20"
     assert payload["items"][0]["repo_full_name"] == "acme/browser-bot"
     assert payload["items"][0]["periods"] == ["daily", "weekly"]
     assert "Browser automation workflows for websites." in payload["items"][0]["candidate_texts"]
+    assert payload["items"][0]["analysis_depth"] == "layered"
+    assert payload["items"][0]["clone_strategy"] == "shallow-clone"
+    assert payload["items"][0]["clone_started"] is True
+    assert payload["items"][0]["analysis_completed"] is True
+    assert payload["items"][0]["cleanup_attempted"] is True
+    assert payload["items"][0]["cleanup_required"] is True
+    assert payload["items"][0]["cleanup_completed"] is True
+    assert payload["items"][0]["fallback_used"] is False
+
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        row_count = connection.execute("SELECT COUNT(*) FROM repo_analysis_snapshots").fetchone()[0]
+    assert row_count == 2
+
+
+def test_build_classification_input_aborts_on_ingest_failure_and_clears_snapshots(tmp_path, monkeypatch) -> None:
+    service = build_service(tmp_path)
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ARG001
+        raise RuntimeError("ingest failed")
+
+    monkeypatch.setattr(service.ingest_service, "ingest_trending_repos", boom)
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    assert result.stage_errors
+    assert result.classification_input_path is None
+    assert result.repository_items == 0
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM repo_analysis_snapshots WHERE snapshot_date = ?",
+            ("2026-03-20",),
+        ).fetchone()[0]
+    assert row_count == 0
+
+
+def test_build_classification_input_removes_stale_input_when_same_date_ingest_fails(tmp_path, monkeypatch) -> None:
+    service = build_service(tmp_path)
+    first = service.build_classification_input(date(2026, 3, 20))
+    assert first.classification_input_path is not None
+    assert first.classification_input_path.exists()
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ARG001
+        raise RuntimeError("ingest failed")
+
+    monkeypatch.setattr(service.ingest_service, "ingest_trending_repos", boom)
+
+    second = service.build_classification_input(date(2026, 3, 20))
+
+    assert second.stage_errors
+    assert second.classification_input_path is None
+    assert not first.classification_input_path.exists()
+
+
+def test_build_classification_input_survives_permission_error_when_removing_stale_input(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = build_service(tmp_path)
+    first = service.build_classification_input(date(2026, 3, 20))
+    assert first.classification_input_path is not None
+    assert first.classification_input_path.exists()
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ARG001
+        raise RuntimeError("ingest failed")
+
+    monkeypatch.setattr(service.ingest_service, "ingest_trending_repos", boom)
+
+    def fail_unlink(*args, **kwargs):  # noqa: ANN001, ANN002, ARG001
+        raise PermissionError("file is open")
+
+    monkeypatch.setattr(type(first.classification_input_path), "unlink", fail_unlink)
+
+    second = service.build_classification_input(date(2026, 3, 20))
+
+    assert second.stage_errors
+    assert second.classification_input_path is None
+    assert any("cleanup warning" in error for error in second.stage_errors)
+
+
+def test_get_connection_closes_connection_on_exit(tmp_path, monkeypatch) -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.row_factory = None
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            del exc_type, exc, tb
+            return False
+
+    fake_connection = FakeConnection()
+    monkeypatch.setattr("haotian.db.schema.sqlite3.connect", lambda db_path: fake_connection)
+
+    with get_connection(f"sqlite:///{tmp_path / 'app.db'}") as connection:
+        assert connection is fake_connection
+
+    assert fake_connection.closed is True
+
+
+def test_repository_analysis_service_marks_clone_failure_before_workspace_assignment(tmp_path, monkeypatch) -> None:
+    analysis_service = RepositoryAnalysisService(run_label="2026-03-20", base_dir=tmp_path / "tmp-repos")
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ARG001
+        raise RuntimeError("clone failed")
+
+    monkeypatch.setattr("haotian.services.repository_workspace_service.RepositoryWorkspaceService.clone_repo", boom)
+
+    result = analysis_service.analyze_repository(
+        repo_full_name="acme/browser-bot",
+        repo_url="https://github.com/acme/browser-bot",
+    )
+
+    assert result.analysis_depth == "fallback"
+    assert result.clone_started is False
+    assert result.cleanup_attempted is False
+    assert result.cleanup_completed is False
+    assert result.cleanup_required is False
+    assert result.fallback_used is True
+    assert result.analysis_completed is False
+
+
+def test_repository_analysis_service_falls_back_when_workspace_path_validation_fails(tmp_path, monkeypatch) -> None:
+    analysis_service = RepositoryAnalysisService(run_label="2026-03-20", base_dir=tmp_path / "tmp-repos")
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ARG001
+        raise ValueError("workspace path alias detected")
+
+    monkeypatch.setattr("haotian.services.repository_workspace_service.RepositoryWorkspaceService.workspace_path", boom)
+
+    result = analysis_service.analyze_repository(
+        repo_full_name="acme/browser-bot",
+        repo_url="https://github.com/acme/browser-bot",
+    )
+
+    assert result.analysis_depth == "fallback"
+    assert result.clone_started is False
+    assert result.cleanup_attempted is False
+    assert result.cleanup_completed is False
+    assert result.cleanup_required is False
+    assert result.fallback_used is True
+    assert result.analysis_completed is False
+
+
+def test_repository_analysis_service_cleans_up_partial_clone_when_clone_fails_after_workspace_creation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    analysis_service = RepositoryAnalysisService(run_label="2026-03-20", base_dir=tmp_path / "tmp-repos")
+
+    def partial_clone(self, *, repo_full_name, repo_url):  # noqa: ANN001, ANN002, ARG001
+        target = self.workspace_path(repo_full_name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "PARTIAL.txt").write_text("partial clone\n", encoding="utf-8")
+        raise RuntimeError("clone failed after workspace creation")
+
+    monkeypatch.setattr("haotian.services.repository_workspace_service.RepositoryWorkspaceService.clone_repo", partial_clone)
+
+    result = analysis_service.analyze_repository(
+        repo_full_name="acme/browser-bot",
+        repo_url="https://github.com/acme/browser-bot",
+    )
+
+    target = analysis_service.workspace_service.workspace_path("acme/browser-bot")
+    assert result.analysis_depth == "fallback"
+    assert result.cleanup_required is True
+    assert result.cleanup_attempted is True
+    assert result.cleanup_completed is True
+    assert not target.exists()
+    assert result.fallback_used is True
+    assert result.analysis_completed is False
+
+
+def test_build_classification_input_marks_over_budget_repositories_as_fallback(tmp_path) -> None:
+    results_by_repo = {
+        "acme/alpha": make_layered_result("acme/alpha", repo_url="https://github.com/acme/alpha"),
+        "acme/bravo": make_layered_result("acme/bravo", repo_url="https://github.com/acme/bravo"),
+        "acme/charlie": make_layered_result("acme/charlie", repo_url="https://github.com/acme/charlie"),
+    }
+    analysis_service = StubRepositoryAnalysisService(results_by_repo)
+    service = build_service(
+        tmp_path,
+        collector=BudgetCollector(),
+        repository_analysis_service=analysis_service,
+        max_deep_analysis_repos=1,
+    )
+
+    result = service.build_classification_input(date(2026, 3, 20))
+    payload = json.loads(result.classification_input_path.read_text(encoding="utf-8"))
+
+    assert result.deep_analyzed_repos == 1
+    assert result.fallback_repos == 2
+    assert result.skipped_due_to_budget == 2
+    assert analysis_service.calls == [
+        ("acme/alpha", True),
+        ("acme/bravo", False),
+        ("acme/charlie", False),
+    ]
+    fallback_items = [item for item in payload["items"] if item["analysis_depth"] == "fallback"]
+    assert len(fallback_items) == 2
+    assert all("skipped due to deep-analysis budget" in item["analysis_limits"] for item in fallback_items)
+
+
+def test_build_classification_input_clears_partial_snapshots_on_mid_stage_failure(tmp_path) -> None:
+    class ExplodingAnalysisService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def analyze_repository(
+            self,
+            *,
+            repo_full_name: str,
+            repo_url: str,
+            allow_deep_analysis: bool = True,
+        ) -> RepositoryAnalysisResult:
+            self.calls += 1
+            if self.calls == 1:
+                return make_layered_result(repo_full_name, repo_url=repo_url)
+            raise RuntimeError("analysis failed mid-stage")
+
+    service = build_service(
+        tmp_path,
+        collector=BudgetCollector(),
+        repository_analysis_service=ExplodingAnalysisService(),
+        max_deep_analysis_repos=3,
+    )
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    assert result.stage_errors
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM repo_analysis_snapshots WHERE snapshot_date = ?",
+            ("2026-03-20",),
+        ).fetchone()[0]
+    assert row_count == 0
+
+
+def test_repository_analysis_service_preserves_config_and_code_signals_under_budget(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "Test User"], check=True)
+    write_paths = {
+        "README.md": "# Demo\n",
+        "doc-0.md": "doc 0\n",
+        "doc-1.md": "doc 1\n",
+        "doc-2.md": "doc 2\n",
+        "doc-3.md": "doc 3\n",
+        "pyproject.toml": "[project]\nname = \"demo\"\n",
+        "main.py": "def main() -> None:\n    pass\n",
+        "workflow.py": "def run_workflow() -> None:\n    pass\n",
+    }
+    for relative_path, content in write_paths.items():
+        file_path = source / relative_path
+        file_path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "-C", str(source), "add", relative_path], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-m", "initial"], check=True)
+
+    service = RepositoryAnalysisService(
+        run_label="2026-03-20",
+        base_dir=tmp_path / "tmp-repos",
+        probe_service=RepositoryProbeService(max_files=4, max_file_bytes=256),
+    )
+    result = service.analyze_repository(
+        repo_full_name="acme/demo",
+        repo_url=str(source),
+    )
+
+    assert result.analysis_depth == "layered"
+    assert "README.md" in result.matched_files
+    assert "pyproject.toml" in result.matched_files
+    assert "main.py" in result.matched_files
+    assert "workflow.py" in result.matched_files
+    assert not any(path.startswith("doc-") for path in result.matched_files)
+    assert result.cleanup_completed is True
+
+
+def test_ingest_classification_output_uses_repo_analysis_snapshots_for_final_counters(tmp_path) -> None:
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/alpha": make_layered_result("acme/alpha", repo_url="https://github.com/acme/alpha"),
+            "acme/bravo": make_layered_result("acme/bravo", repo_url="https://github.com/acme/bravo"),
+            "acme/charlie": make_layered_result("acme/charlie", repo_url="https://github.com/acme/charlie"),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=BudgetCollector(),
+        repository_analysis_service=analysis_service,
+        max_deep_analysis_repos=1,
+    )
+
+    staged = service.build_classification_input(date(2026, 3, 20))
+    assert not service.artifact_service.run_summary_path("2026-03-20").exists()
+
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/alpha",
+                    "capabilities": [],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    assert result.deep_analyzed_repos == 1
+    assert result.fallback_repos == 2
+    assert result.skipped_due_to_budget == 2
+    assert result.cleanup_warnings == 0
+
+
+def test_build_classification_input_reconciles_repo_analysis_snapshots_for_same_date_rerun(tmp_path) -> None:
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/alpha": make_layered_result("acme/alpha", repo_url="https://github.com/acme/alpha"),
+            "acme/bravo": make_layered_result("acme/bravo", repo_url="https://github.com/acme/bravo"),
+            "acme/charlie": make_layered_result("acme/charlie", repo_url="https://github.com/acme/charlie"),
+        }
+    )
+    collector = MutableCollector(["acme/alpha", "acme/bravo", "acme/charlie"])
+    service = build_service(
+        tmp_path,
+        collector=collector,
+        repository_analysis_service=analysis_service,
+        max_deep_analysis_repos=3,
+    )
+
+    service.build_classification_input(date(2026, 3, 20))
+    collector.repo_full_names = ["acme/alpha"]
+    staged = service.build_classification_input(date(2026, 3, 20))
+
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM repo_analysis_snapshots WHERE snapshot_date = ?",
+            ("2026-03-20",),
+        ).fetchone()[0]
+    assert row_count == 1
+
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/alpha",
+                    "capabilities": [],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    assert result.deep_analyzed_repos == 1
+    assert result.fallback_repos == 0
+    assert result.skipped_due_to_budget == 0
+
+
+def test_build_classification_input_creates_date_scoped_analysis_service_per_report_date(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    created: list[tuple[str, Path]] = []
+
+    class FakeRepositoryAnalysisService:
+        def __init__(self, *, run_label: str, base_dir: Path | str | None = None, **kwargs) -> None:
+            del kwargs
+            base_path = Path(base_dir) if base_dir is not None else Path("missing-base")
+            created.append((run_label, base_path))
+            self.run_label = run_label
+            self.base_dir = base_path
+
+        def analyze_repository(
+            self,
+            *,
+            repo_full_name: str,
+            repo_url: str,
+            allow_deep_analysis: bool = True,
+        ) -> RepositoryAnalysisResult:
+            del allow_deep_analysis
+            return make_layered_result(repo_full_name, repo_url=repo_url)
+
+    monkeypatch.setattr("haotian.services.orchestration_service.RepositoryAnalysisService", FakeRepositoryAnalysisService)
+
+    service = build_service(tmp_path, repository_tmp_dir=tmp_path / "tmp-repos")
+
+    first = service.build_classification_input(date(2026, 3, 20))
+    second = service.build_classification_input(date(2026, 3, 21))
+
+    assert first.stage_errors == []
+    assert second.stage_errors == []
+    assert created == [
+        ("2026-03-20", tmp_path / "tmp-repos"),
+        ("2026-03-21", tmp_path / "tmp-repos"),
+    ]
 
 
 def test_ingest_classification_output_auto_configures_registry_and_generates_reports(tmp_path) -> None:
-    service = build_service(tmp_path)
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result("acme/browser-bot", repo_url="https://github.com/acme/browser-bot"),
+            "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
+        }
+    )
+    service = build_service(tmp_path, repository_analysis_service=analysis_service)
     staged = service.build_classification_input(date(2026, 3, 20))
     output_path = staged.classification_input_path.with_name("classification-output.json")
     output_path.write_text(
@@ -172,7 +754,7 @@ def test_ingest_classification_output_auto_configures_registry_and_generates_rep
     assert "workflow_orchestration" in capabilities
 
     content = result.markdown_report_path.read_text(encoding="utf-8")
-    assert "## Repo Snapshot" in content
-    assert "Today's repos (2): `acme/browser-bot`, `acme/extractor`" in content
-    assert "Manual Attention" in content
-    assert "Periods: `daily, weekly`" in content or "Periods: `monthly`" in content
+    assert "## 仓库快照" in content
+    assert "今日仓库（2）：`acme/browser-bot`, `acme/extractor`" in content
+    assert "## 需要人工关注" in content
+    assert "榜单周期：`每日、每周`" in content or "榜单周期：`每月`" in content

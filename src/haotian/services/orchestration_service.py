@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from pathlib import Path
 import re
 
 from haotian.analyzers.capability_normalizer import CapabilityNormalizer
+from haotian.config import get_settings
 from haotian.collectors.github_repository_metadata import GithubRepositoryMetadataFetcher
 from haotian.collectors.github_trending import GithubTrendingCollector, TrendingRepo
 from haotian.db.schema import get_connection, initialize_schema
@@ -23,6 +25,8 @@ from haotian.registry.capability_registry import (
 from haotian.services.classification_artifact_service import ClassificationArtifactService, RepoClassificationRecord
 from haotian.services.diff_service import CapabilityObservation, DiffService
 from haotian.services.ingest_service import IngestService
+from haotian.services.repository_analysis_service import RepositoryAnalysisResult
+from haotian.services.repository_analysis_service import RepositoryAnalysisService
 from haotian.services.report_service import ReportService
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +39,10 @@ class ClassificationInputBuildResult:
     report_date: date
     repos_ingested: int = 0
     repository_items: int = 0
+    deep_analyzed_repos: int = 0
+    fallback_repos: int = 0
+    skipped_due_to_budget: int = 0
+    cleanup_warnings: int = 0
     classification_input_path: Path | None = None
     stage_errors: list[str] = field(default_factory=list)
 
@@ -51,6 +59,10 @@ class DailyPipelineResult:
     repos_ingested: int = 0
     capabilities_identified: int = 0
     alerts_generated: int = 0
+    deep_analyzed_repos: int = 0
+    fallback_repos: int = 0
+    skipped_due_to_budget: int = 0
+    cleanup_warnings: int = 0
     markdown_report_path: Path | None = None
     json_report_path: Path | None = None
     classification_output_path: Path | None = None
@@ -78,6 +90,9 @@ class OrchestrationService:
         report_service: ReportService | None = None,
         metadata_fetcher: GithubRepositoryMetadataFetcher | None = None,
         artifact_service: ClassificationArtifactService | None = None,
+        repository_analysis_service: RepositoryAnalysisService | None = None,
+        repository_tmp_dir: Path | None = None,
+        max_deep_analysis_repos: int | None = None,
         database_url: str | None = None,
     ) -> None:
         self.database_url = database_url
@@ -88,6 +103,9 @@ class OrchestrationService:
         self.report_service = report_service or ReportService(database_url=database_url)
         self.metadata_fetcher = metadata_fetcher or GithubRepositoryMetadataFetcher()
         self.artifact_service = artifact_service or ClassificationArtifactService()
+        self.repository_analysis_service = repository_analysis_service
+        self.repository_tmp_dir = repository_tmp_dir
+        self.max_deep_analysis_repos = max_deep_analysis_repos
         self.normalizer = CapabilityNormalizer()
 
     def build_classification_input(self, report_date: date | None = None) -> ClassificationInputBuildResult:
@@ -112,13 +130,36 @@ class OrchestrationService:
             )
         except Exception as exc:  # noqa: BLE001
             self._record_stage_error(result, "ingest", exc, {"report_date": target_date.isoformat()})
+            self._clear_repo_analysis_snapshots(target_date)
+            cleanup_warning = self._remove_classification_input(target_date)
+            if cleanup_warning:
+                result.stage_errors.append(cleanup_warning)
+            return result
 
         try:
             LOGGER.info("[stage] building classification input artifact for %s trending rows", len(repositories))
-            items = self._build_classification_items(repositories)
+            analysis_service = self._resolve_repository_analysis_service(target_date)
+            items, analysis_results = self._build_classification_items(
+                repositories,
+                report_date=target_date,
+                analysis_service=analysis_service,
+            )
             result.repository_items = len(items)
+            result.deep_analyzed_repos = sum(1 for analysis_result in analysis_results if analysis_result.analysis_depth != "fallback")
+            result.fallback_repos = sum(1 for analysis_result in analysis_results if analysis_result.fallback_used)
+            result.skipped_due_to_budget = sum(
+                1 for analysis_result in analysis_results if any("deep-analysis budget" in limit for limit in analysis_result.analysis_limits)
+            )
+            result.cleanup_warnings = sum(
+                1 for analysis_result in analysis_results if analysis_result.cleanup_required and not analysis_result.cleanup_completed
+            )
         except Exception as exc:  # noqa: BLE001
             self._record_stage_error(result, "stage", exc, {"repo_count": len(repositories)})
+            self._clear_repo_analysis_snapshots(target_date)
+            cleanup_warning = self._remove_classification_input(target_date)
+            if cleanup_warning:
+                result.stage_errors.append(cleanup_warning)
+            return result
 
         try:
             result.classification_input_path = self.artifact_service.write_classification_input(
@@ -128,6 +169,11 @@ class OrchestrationService:
             LOGGER.info("[stage] wrote classification input to %s", result.classification_input_path)
         except Exception as exc:  # noqa: BLE001
             self._record_stage_error(result, "artifact", exc, {"report_date": target_date.isoformat()})
+            self._clear_repo_analysis_snapshots(target_date)
+            cleanup_warning = self._remove_classification_input(target_date)
+            if cleanup_warning:
+                result.stage_errors.append(cleanup_warning)
+            return result
 
         return result
 
@@ -137,6 +183,11 @@ class OrchestrationService:
         result = DailyPipelineResult(report_date=target_date)
         output_path = path or self.artifact_service.classification_output_path(target_date.isoformat())
         result.classification_output_path = output_path
+        analysis_counters = self._load_repo_analysis_counters(target_date)
+        result.deep_analyzed_repos = analysis_counters["deep_analyzed_repos"]
+        result.fallback_repos = analysis_counters["fallback_repos"]
+        result.skipped_due_to_budget = analysis_counters["skipped_due_to_budget"]
+        result.cleanup_warnings = analysis_counters["cleanup_warnings"]
         observations: list[CapabilityObservation] = []
 
         try:
@@ -187,7 +238,13 @@ class OrchestrationService:
                 )
         return repositories
 
-    def _build_classification_items(self, repositories: list[TrendingRepo]) -> list[dict[str, object]]:
+    def _build_classification_items(
+        self,
+        repositories: list[TrendingRepo],
+        *,
+        report_date: date,
+        analysis_service: RepositoryAnalysisService,
+    ) -> tuple[list[dict[str, object]], list[RepositoryAnalysisResult]]:
         grouped: dict[str, dict[str, object]] = {}
         for repo in repositories:
             entry = grouped.setdefault(
@@ -207,11 +264,23 @@ class OrchestrationService:
                 entry["language"] = repo.language
 
         items: list[dict[str, object]] = []
-        for repo_full_name in sorted(grouped):
+        analysis_results: list[RepositoryAnalysisResult] = []
+        max_deep = self.max_deep_analysis_repos
+        if max_deep is None:
+            max_deep = get_settings().max_deep_analysis_repos
+        for index, repo_full_name in enumerate(sorted(grouped)):
             entry = grouped[repo_full_name]
             supplemental = self.metadata_fetcher.fetch(repo_full_name)
             periods = sorted(str(period) for period in entry["periods"])
             topics = sorted(set(str(topic) for topic in supplemental.topics if topic))
+            allow_deep_analysis = index < max_deep
+            analysis_result = analysis_service.analyze_repository(
+                repo_full_name=repo_full_name,
+                repo_url=str(entry["repo_url"]),
+                allow_deep_analysis=allow_deep_analysis,
+            )
+            self._persist_repo_analysis_snapshot(report_date=report_date, result=analysis_result)
+            analysis_results.append(analysis_result)
             items.append(
                 {
                     "repo_full_name": repo_full_name,
@@ -229,9 +298,166 @@ class OrchestrationService:
                         language=str(entry["language"]) if entry["language"] else None,
                         periods=periods,
                     ),
+                    **analysis_result.to_classification_input_fields(),
                 }
             )
-        return items
+        self._reconcile_repo_analysis_snapshots(report_date=report_date, active_repo_full_names=tuple(sorted(grouped)))
+        return items, analysis_results
+
+    def _resolve_repository_analysis_service(self, report_date: date) -> RepositoryAnalysisService:
+        if self.repository_analysis_service is not None:
+            return self.repository_analysis_service
+        settings = get_settings()
+        base_dir = self.repository_tmp_dir or settings.tmp_repo_dir
+        return RepositoryAnalysisService(run_label=report_date.isoformat(), base_dir=base_dir)
+
+    def _load_repo_analysis_counters(self, report_date: date) -> dict[str, int]:
+        counters = {
+            "deep_analyzed_repos": 0,
+            "fallback_repos": 0,
+            "skipped_due_to_budget": 0,
+            "cleanup_warnings": 0,
+        }
+        with get_connection(self.database_url) as connection:
+            rows = connection.execute(
+                """
+                SELECT analysis_depth, fallback_used, cleanup_required, cleanup_completed, analysis_limits
+                FROM repo_analysis_snapshots
+                WHERE snapshot_date = ?
+                """,
+                (report_date.isoformat(),),
+            ).fetchall()
+
+        for row in rows:
+            analysis_depth = str(row["analysis_depth"] or "")
+            fallback_used = bool(row["fallback_used"])
+            cleanup_required = bool(row["cleanup_required"])
+            cleanup_completed = bool(row["cleanup_completed"])
+            analysis_limits = self._parse_json_list(row["analysis_limits"])
+
+            if analysis_depth != "fallback":
+                counters["deep_analyzed_repos"] += 1
+            if fallback_used:
+                counters["fallback_repos"] += 1
+            if any("deep-analysis budget" in limit for limit in analysis_limits):
+                counters["skipped_due_to_budget"] += 1
+            if cleanup_required and not cleanup_completed:
+                counters["cleanup_warnings"] += 1
+
+        return counters
+
+    def _persist_repo_analysis_snapshot(self, *, report_date: date, result: RepositoryAnalysisResult) -> None:
+        with get_connection(self.database_url) as connection:
+            connection.execute(
+                """
+                INSERT INTO repo_analysis_snapshots (
+                    snapshot_date,
+                    repo_full_name,
+                    repo_url,
+                    analysis_depth,
+                    clone_strategy,
+                    clone_started,
+                    analysis_completed,
+                    cleanup_attempted,
+                    cleanup_required,
+                    cleanup_completed,
+                    fallback_used,
+                    root_files,
+                    matched_files,
+                    matched_keywords,
+                    architecture_signals,
+                    probe_summary,
+                    evidence_snippets,
+                    analysis_limits
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_date, repo_full_name)
+                DO UPDATE SET
+                    repo_url = excluded.repo_url,
+                    analysis_depth = excluded.analysis_depth,
+                    clone_strategy = excluded.clone_strategy,
+                    clone_started = excluded.clone_started,
+                    analysis_completed = excluded.analysis_completed,
+                    cleanup_attempted = excluded.cleanup_attempted,
+                    cleanup_required = excluded.cleanup_required,
+                    cleanup_completed = excluded.cleanup_completed,
+                    fallback_used = excluded.fallback_used,
+                    root_files = excluded.root_files,
+                    matched_files = excluded.matched_files,
+                    matched_keywords = excluded.matched_keywords,
+                    architecture_signals = excluded.architecture_signals,
+                    probe_summary = excluded.probe_summary,
+                    evidence_snippets = excluded.evidence_snippets,
+                    analysis_limits = excluded.analysis_limits
+                """,
+                (
+                    report_date.isoformat(),
+                    result.repo_full_name,
+                    result.repo_url,
+                    result.analysis_depth,
+                    result.clone_strategy,
+                    int(result.clone_started),
+                    int(result.analysis_completed),
+                    int(result.cleanup_attempted),
+                    int(result.cleanup_required),
+                    int(result.cleanup_completed),
+                    int(result.fallback_used),
+                    json.dumps(list(result.root_files), ensure_ascii=False),
+                    json.dumps(list(result.matched_files), ensure_ascii=False),
+                    json.dumps(list(result.matched_keywords), ensure_ascii=False),
+                    json.dumps(list(result.architecture_signals), ensure_ascii=False),
+                    result.probe_summary,
+                    json.dumps(
+                        [
+                            {
+                                "path": snippet.path,
+                                "excerpt": snippet.excerpt,
+                                "why_it_matters": snippet.why_it_matters,
+                            }
+                            for snippet in result.evidence_snippets
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(list(result.analysis_limits), ensure_ascii=False),
+                ),
+            )
+            connection.commit()
+
+    def _reconcile_repo_analysis_snapshots(self, *, report_date: date, active_repo_full_names: tuple[str, ...]) -> None:
+        snapshot_date = report_date.isoformat()
+        with get_connection(self.database_url) as connection:
+            if active_repo_full_names:
+                placeholders = ", ".join("?" for _ in active_repo_full_names)
+                connection.execute(
+                    f"""
+                    DELETE FROM repo_analysis_snapshots
+                    WHERE snapshot_date = ?
+                      AND repo_full_name NOT IN ({placeholders})
+                    """,
+                    (snapshot_date, *active_repo_full_names),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM repo_analysis_snapshots WHERE snapshot_date = ?",
+                    (snapshot_date,),
+            )
+            connection.commit()
+
+    def _clear_repo_analysis_snapshots(self, report_date: date) -> None:
+        with get_connection(self.database_url) as connection:
+            connection.execute(
+                "DELETE FROM repo_analysis_snapshots WHERE snapshot_date = ?",
+                (report_date.isoformat(),),
+            )
+            connection.commit()
+
+    def _remove_classification_input(self, report_date: date) -> str | None:
+        input_path = self.artifact_service.classification_input_path(report_date.isoformat())
+        if input_path.exists():
+            try:
+                input_path.unlink()
+            except PermissionError as exc:
+                return f"cleanup warning: {exc} | context={{'path': '{input_path}'}}"
+        return None
 
     def _persist_classification_results(
         self,
@@ -419,6 +645,17 @@ class OrchestrationService:
         message = f"[{stage}] {exc} | context={context}"
         LOGGER.exception(message)
         result.stage_errors.append(message)
+
+    @staticmethod
+    def _parse_json_list(raw_value: object) -> list[str]:
+        if isinstance(raw_value, str) and raw_value.strip():
+            try:
+                payload = json.loads(raw_value)
+            except Exception:  # noqa: BLE001
+                return []
+            if isinstance(payload, list):
+                return [str(item) for item in payload]
+        return []
 
     @staticmethod
     def _collect_candidate_texts(

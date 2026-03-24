@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sqlite3
 from pathlib import Path
+from collections.abc import Iterator
 
 from haotian.config import get_settings
 
@@ -69,6 +71,37 @@ CREATE INDEX IF NOT EXISTS idx_repo_capabilities_snapshot_period
 ON repo_capabilities (snapshot_date, period, capability_id);
 """
 
+CREATE_REPO_ANALYSIS_SNAPSHOTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS repo_analysis_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date TEXT NOT NULL,
+    repo_full_name TEXT NOT NULL,
+    repo_url TEXT NOT NULL,
+    analysis_depth TEXT NOT NULL,
+    clone_strategy TEXT NOT NULL,
+    clone_started INTEGER NOT NULL DEFAULT 0,
+    analysis_completed INTEGER NOT NULL DEFAULT 0,
+    cleanup_attempted INTEGER NOT NULL DEFAULT 0,
+    cleanup_required INTEGER NOT NULL DEFAULT 0,
+    cleanup_completed INTEGER NOT NULL DEFAULT 0,
+    fallback_used INTEGER NOT NULL DEFAULT 0,
+    root_files TEXT NOT NULL DEFAULT '[]',
+    matched_files TEXT NOT NULL DEFAULT '[]',
+    matched_keywords TEXT NOT NULL DEFAULT '[]',
+    architecture_signals TEXT NOT NULL DEFAULT '[]',
+    probe_summary TEXT NOT NULL DEFAULT '',
+    evidence_snippets TEXT NOT NULL DEFAULT '[]',
+    analysis_limits TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (snapshot_date, repo_full_name)
+);
+"""
+
+CREATE_REPO_ANALYSIS_SNAPSHOTS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_repo_analysis_snapshots_snapshot_date
+ON repo_analysis_snapshots (snapshot_date, repo_full_name);
+"""
+
 CREATE_CAPABILITY_REGISTRY_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS capability_registry (
     capability_id TEXT PRIMARY KEY,
@@ -120,14 +153,18 @@ def resolve_sqlite_path(database_url: str | None = None) -> Path:
     return Path(resolved_url.removeprefix("sqlite:///"))
 
 
-def get_connection(database_url: str | None = None) -> sqlite3.Connection:
-    """Open a sqlite connection and ensure the parent directory exists."""
+@contextmanager
+def get_connection(database_url: str | None = None) -> Iterator[sqlite3.Connection]:
+    """Open a sqlite connection, yield it, and always close it on exit."""
 
     db_path = resolve_sqlite_path(database_url)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
-    return connection
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def initialize_schema(database_url: str | None = None) -> None:
@@ -138,6 +175,8 @@ def initialize_schema(database_url: str | None = None) -> None:
         connection.execute(CREATE_TRENDING_REPOS_INDEX_SQL)
         connection.execute(CREATE_REPO_CAPABILITIES_TABLE_SQL)
         connection.execute(CREATE_REPO_CAPABILITIES_INDEX_SQL)
+        connection.execute(CREATE_REPO_ANALYSIS_SNAPSHOTS_TABLE_SQL)
+        connection.execute(CREATE_REPO_ANALYSIS_SNAPSHOTS_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_REGISTRY_TABLE_SQL)
         connection.execute(CREATE_CAPABILITY_REGISTRY_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)

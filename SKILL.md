@@ -18,6 +18,13 @@ Use this skill only when the user explicitly wants a Haotian refresh or report u
 5. Run the same command again to finalize the database update and report generation.
 6. Summarize the resulting Markdown/JSON reports for the user.
 
+## Repository Evidence Rules
+
+- When reading `classification_input`, use `analysis_depth`, `matched_files`, `probe_summary`, and `evidence_snippets` as the primary evidence surface.
+- Prefer concrete repo evidence over README-only claims; if the probe output and README disagree, trust the probe evidence and note the mismatch.
+- If `analysis_depth` is `fallback` or `fallback_used` is true, say that explicitly in `reason` and keep confidence conservative.
+- Keep `reason` and `summary` in Chinese.
+
 ## Classification Output Rules
 
 - Write plain JSON only. No markdown fences.
@@ -38,8 +45,8 @@ Use this skill only when the user explicitly wants a Haotian refresh or report u
       {
         "capability_id": "browser_automation",
         "confidence": 0.91,
-        "reason": "The repo description and README both focus on browser workflow execution.",
-        "summary": "Automates browser workflows for websites.",
+        "reason": "仓库描述和 README 都明确聚焦于浏览器工作流执行。",
+        "summary": "用于自动执行网站上的浏览器工作流。",
         "needs_review": false,
         "source_label": "codex"
       }

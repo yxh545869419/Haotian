@@ -41,6 +41,7 @@ def run_once(
 
 def _build_service(workspace: Path | str | None) -> OrchestrationService:
     settings = get_settings()
+    repository_tmp_dir = None
     if workspace is None:
         database_url = settings.database_url
         report_dir = settings.report_dir
@@ -51,11 +52,13 @@ def _build_service(workspace: Path | str | None) -> OrchestrationService:
         database_url = f"sqlite:///{(data_dir / 'app.db').resolve().as_posix()}"
         report_dir = data_dir / "reports"
         run_dir = data_dir / "runs"
+        repository_tmp_dir = data_dir / "tmp" / "repos"
 
     return OrchestrationService(
         database_url=database_url,
         report_service=ReportService(database_url=database_url, report_dir=report_dir),
         artifact_service=ClassificationArtifactService(base_dir=run_dir),
+        repository_tmp_dir=repository_tmp_dir,
     )
 
 
@@ -66,12 +69,18 @@ def _build_prepare_summary(result: ClassificationInputBuildResult, output_path: 
         "report_date": result.report_date.isoformat(),
         "repos_ingested": result.repos_ingested,
         "repository_items": result.repository_items,
+        "deep_analyzed_repos": result.deep_analyzed_repos,
+        "fallback_repos": result.fallback_repos,
+        "skipped_due_to_budget": result.skipped_due_to_budget,
+        "cleanup_warnings": result.cleanup_warnings,
         "classification_input": str(result.classification_input_path) if result.classification_input_path else None,
         "classification_output": str(output_path),
         "stage_errors": result.stage_errors,
         "next_action": (
             "Read docs/capability-taxonomy.md, write classification-output.json beside the staged input, "
             "then run the same command again to finalize reports."
+            if status == "awaiting_classification"
+            else "Inspect stage_errors and repair the run."
         ),
     }
 
@@ -88,6 +97,10 @@ def _build_finalize_summary(result: DailyPipelineResult) -> dict[str, object]:
         "repos_ingested": result.repos_ingested,
         "capabilities_identified": result.capabilities_identified,
         "alerts_generated": result.alerts_generated,
+        "deep_analyzed_repos": result.deep_analyzed_repos,
+        "fallback_repos": result.fallback_repos,
+        "skipped_due_to_budget": result.skipped_due_to_budget,
+        "cleanup_warnings": result.cleanup_warnings,
         "classification_output": str(result.classification_output_path) if result.classification_output_path else None,
         "markdown_report": str(result.markdown_report_path) if result.markdown_report_path else None,
         "json_report": str(result.json_report_path) if result.json_report_path else None,
