@@ -12,6 +12,7 @@ from pathlib import Path
 from haotian.config import get_settings
 from haotian.db.schema import get_connection, initialize_schema
 from haotian.registry.capability_registry import CapabilityStatus
+from haotian.services.classification_artifact_service import ClassificationArtifactService
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +367,7 @@ class ReportService:
         sections: dict[str, list[ReportItem]],
         repo_snapshot: dict[str, tuple[str, ...]],
     ) -> dict[str, object]:
+        skill_sync_payload = self._load_skill_sync_report(target_date)
         summary = {
             "total_capabilities": len(sections["summary"]),
             "manual_attention": len(sections["manual_attention"]),
@@ -405,6 +407,8 @@ class ReportService:
             "capability_cards": cards,
             "taxonomy_gap_summary": taxonomy_gap_summary,
             "taxonomy_gap_candidates": taxonomy_gap_candidates,
+            "skill_sync_summary": skill_sync_payload["summary"],
+            "skill_sync_actions": skill_sync_payload["actions"],
             "artifact_links": self._build_artifact_links(target_date),
         }
 
@@ -483,6 +487,7 @@ class ReportService:
             "run_summary": str(run_base / "run-summary.json"),
             "capability_audit": str(run_base / "capability-audit.json"),
             "taxonomy_gap_candidates": str(run_base / "taxonomy-gap-candidates.json"),
+            "skill_sync_report": str(run_base / "skill-sync-report.json"),
         }
 
     def _load_taxonomy_gap_candidates(self, target_date: date) -> list[dict[str, object]]:
@@ -516,6 +521,72 @@ class ReportService:
                 }
             )
         return normalized
+
+    def _load_skill_sync_report(self, target_date: date) -> dict[str, object]:
+        path = self.run_dir / target_date.isoformat() / "skill-sync-report.json"
+        default_payload = ClassificationArtifactService.empty_skill_sync_report_payload(target_date.isoformat())
+        if not path.exists():
+            return default_payload
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return default_payload
+        if not isinstance(payload, dict):
+            return default_payload
+
+        summary = ClassificationArtifactService.default_skill_sync_summary()
+        raw_summary = payload.get("summary", {})
+        if isinstance(raw_summary, dict):
+            summary["config_ready"] = bool(raw_summary.get("config_ready", summary["config_ready"]))
+            for key in summary:
+                if key == "config_ready":
+                    continue
+                try:
+                    if key in raw_summary:
+                        summary[key] = int(raw_summary[key])
+                except (TypeError, ValueError):
+                    continue
+
+        actions: list[dict[str, object]] = []
+        raw_actions = payload.get("actions", [])
+        if isinstance(raw_actions, list):
+            for item in raw_actions:
+                if not isinstance(item, dict):
+                    continue
+                actions.append(
+                    {
+                        "action": str(item.get("action", "")),
+                        "slug": str(item.get("slug", "")),
+                        "display_name": str(item.get("display_name", "")),
+                        "source_repo_full_name": str(item.get("source_repo_full_name", "")),
+                        "repo_url": str(item.get("repo_url", "")),
+                        "relative_root": str(item.get("relative_root", "")),
+                        "files": list(item.get("files", [])) if isinstance(item.get("files", []), list) else [],
+                        "matched_installed_slug": item.get("matched_installed_slug"),
+                        "matched_installed_path": item.get("matched_installed_path"),
+                        "installed_path": item.get("installed_path"),
+                        "audit_status": item.get("audit_status"),
+                        "audit_verdict": item.get("audit_verdict"),
+                        "reason": str(item.get("reason", "")),
+                    }
+                )
+        summary["action_count"] = len(actions)
+        for action_name in (
+            "aligned_existing",
+            "installed_new",
+            "discarded_non_integrable",
+            "blocked_audit_failure",
+            "blocked_ambiguous_match",
+            "rolled_back_install_failure",
+        ):
+            summary[action_name] = sum(1 for item in actions if item.get("action") == action_name)
+
+        return {
+            "schema_version": 1,
+            "report_date": target_date.isoformat(),
+            "summary": summary,
+            "actions": actions,
+        }
     def _highlight_sort_key(self, item: ReportItem) -> tuple[int, int, float, str]:
         priority_order = {"high": 0, "medium": 1, "low": 2}
         status_order = {

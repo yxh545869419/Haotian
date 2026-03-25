@@ -30,6 +30,8 @@ from haotian.services.repository_analysis_cache_service import RepositoryAnalysi
 from haotian.services.repository_analysis_service import RepositoryAnalysisResult
 from haotian.services.repository_analysis_service import RepositoryAnalysisService
 from haotian.services.report_service import ReportService
+from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
+from haotian.services.skill_sync_service import SkillSyncCandidate, SkillSyncService
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,10 +74,13 @@ class DailyPipelineResult:
     classification_output_path: Path | None = None
     capability_audit_path: Path | None = None
     taxonomy_gap_candidates_path: Path | None = None
+    skill_sync_report_path: Path | None = None
     auto_promoted_capabilities: list[dict[str, object]] = field(default_factory=list)
     risky_enhancement_candidates: list[dict[str, object]] = field(default_factory=list)
     manual_attention_items: list[dict[str, object]] = field(default_factory=list)
     taxonomy_gap_candidates: list[dict[str, object]] = field(default_factory=list)
+    skill_sync_summary: dict[str, object] = field(default_factory=dict)
+    skill_sync_actions: list[dict[str, object]] = field(default_factory=list)
     stage_errors: list[str] = field(default_factory=list)
 
     @property
@@ -98,6 +103,7 @@ class OrchestrationService:
         diff_service: DiffService | None = None,
         registry: CapabilityRegistryRepository | None = None,
         report_service: ReportService | None = None,
+        skill_sync_service: SkillSyncService | None = None,
         metadata_fetcher: GithubRepositoryMetadataFetcher | None = None,
         artifact_service: ClassificationArtifactService | None = None,
         repository_analysis_service: RepositoryAnalysisService | None = None,
@@ -112,6 +118,7 @@ class OrchestrationService:
         self.diff_service = diff_service or DiffService()
         self.registry = registry or CapabilityRegistryRepository(database_url=database_url)
         self.report_service = report_service or ReportService(database_url=database_url)
+        self.skill_sync_service = skill_sync_service or SkillSyncService()
         self.metadata_fetcher = metadata_fetcher or GithubRepositoryMetadataFetcher()
         self.artifact_service = artifact_service or ClassificationArtifactService()
         self.repository_analysis_service = repository_analysis_service
@@ -203,6 +210,7 @@ class OrchestrationService:
         result.skipped_due_to_budget = analysis_counters["skipped_due_to_budget"]
         result.cleanup_warnings = analysis_counters["cleanup_warnings"]
         observations: list[CapabilityObservation] = []
+        result.skill_sync_summary = self.artifact_service.default_skill_sync_summary()
 
         try:
             LOGGER.info("[ingest] reading classification output from %s", output_path)
@@ -243,6 +251,32 @@ class OrchestrationService:
         except Exception as exc:  # noqa: BLE001
             self._record_stage_error(result, "audit", exc, {"report_date": target_date.isoformat()})
 
+        skill_sync_payload = self.artifact_service.empty_skill_sync_report_payload(target_date.isoformat())
+        try:
+            LOGGER.info("[skill-sync] deriving deterministic skill sync candidates")
+            sync_candidates = self._build_skill_sync_candidates(target_date, classified_repositories)
+            skill_sync_result = self.skill_sync_service.sync(
+                report_date=target_date,
+                candidates=sync_candidates,
+            )
+            skill_sync_payload = skill_sync_result.to_payload()
+        except Exception as exc:  # noqa: BLE001
+            self._record_stage_error(result, "skill_sync", exc, {"report_date": target_date.isoformat()})
+        finally:
+            try:
+                result.skill_sync_report_path = self.artifact_service.write_json_artifact(
+                    path=self.artifact_service.skill_sync_report_path(target_date.isoformat()),
+                    payload=skill_sync_payload,
+                )
+                result.skill_sync_summary = dict(skill_sync_payload.get("summary", {}))
+                result.skill_sync_actions = [
+                    dict(item)
+                    for item in skill_sync_payload.get("actions", [])
+                    if isinstance(item, dict)
+                ]
+            except Exception as exc:  # noqa: BLE001
+                self._record_stage_error(result, "skill_sync_artifact", exc, {"report_date": target_date.isoformat()})
+
         try:
             LOGGER.info("[report] generating markdown and json reports")
             result.markdown_report_path = self.report_service.generate_daily_report(target_date)
@@ -252,6 +286,54 @@ class OrchestrationService:
             self._record_stage_error(result, "report", exc, {"report_date": target_date.isoformat()})
 
         return result
+
+    def _build_skill_sync_candidates(
+        self,
+        report_date: date,
+        classified_repositories: list[RepoClassificationRecord],
+    ) -> list[SkillSyncCandidate]:
+        capability_ids_by_repo = {
+            record.repo_full_name: tuple(capability.capability_id for capability in record.capabilities)
+            for record in classified_repositories
+        }
+        candidates: list[SkillSyncCandidate] = []
+        seen: set[tuple[str, str, str]] = set()
+        for item in self.artifact_service.read_classification_input_items(report_date.isoformat()):
+            repo_full_name = str(item.get("repo_full_name", "")).strip()
+            repo_url = str(item.get("repo_url", "")).strip()
+            packages = item.get("discovered_skill_packages", [])
+            if not isinstance(packages, list):
+                continue
+            for raw_package in packages:
+                if not isinstance(raw_package, dict):
+                    continue
+                package = DiscoveredSkillPackage.from_serialized_payload(raw_package)
+                slug = self._build_skill_candidate_slug(package, repo_full_name)
+                key = (slug, repo_full_name, package.relative_root)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(
+                    SkillSyncCandidate(
+                        slug=slug,
+                        display_name=package.skill_name or slug,
+                        source_repo_full_name=repo_full_name,
+                        repo_url=repo_url,
+                        relative_root=package.relative_root or ".",
+                        files=package.files,
+                        capability_ids=capability_ids_by_repo.get(repo_full_name, ()),
+                    )
+                )
+        candidates.sort(key=lambda item: (item.slug.casefold(), item.source_repo_full_name.casefold(), item.relative_root.casefold()))
+        return candidates
+
+    @staticmethod
+    def _build_skill_candidate_slug(package: DiscoveredSkillPackage, repo_full_name: str) -> str:
+        candidate = package.skill_name.strip()
+        if not candidate:
+            candidate = package.relative_root.strip().split("/")[-1] or repo_full_name.rsplit("/", 1)[-1]
+        slug = re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
+        return slug or repo_full_name.rsplit("/", 1)[-1].lower()
 
     def _collect_trending_repositories(self, report_date: date) -> list[TrendingRepo]:
         repositories: list[TrendingRepo] = []

@@ -16,6 +16,9 @@ from haotian.registry.capability_registry import CapabilityRegistryRepository, C
 from haotian.services.classification_artifact_service import ClassificationArtifactService
 from haotian.services.orchestration_service import OrchestrationService
 from haotian.services.report_service import ReportService
+from haotian.services.skill_sync_service import SkillSyncAction
+from haotian.services.skill_sync_service import SkillSyncCandidate
+from haotian.services.skill_sync_service import SkillSyncResult
 from haotian.db.schema import get_connection
 
 
@@ -185,6 +188,7 @@ def build_service(
     metadata_fetcher: StubMetadataFetcher | None = None,
     repository_tmp_dir: Path | None = None,
     max_deep_analysis_repos: int | None = None,
+    skill_sync_service=None,
 ):
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     report_dir = tmp_path / "reports"
@@ -197,8 +201,52 @@ def build_service(
         repository_analysis_service=repository_analysis_service,
         repository_tmp_dir=repository_tmp_dir,
         max_deep_analysis_repos=max_deep_analysis_repos,
+        skill_sync_service=skill_sync_service,
         database_url=database_url,
     )
+
+
+class StubSkillSyncService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[date, tuple[SkillSyncCandidate, ...]]] = []
+
+    def sync(
+        self,
+        *,
+        report_date: date,
+        candidates,
+        inventory=None,
+    ) -> SkillSyncResult:
+        del inventory
+        normalized = tuple(candidates)
+        self.calls.append((report_date, normalized))
+        return SkillSyncResult(
+            report_date=report_date,
+            summary={
+                "config_ready": True,
+                "candidate_count": len(normalized),
+                "action_count": 1,
+                "aligned_existing": 1,
+                "installed_new": 0,
+                "discarded_non_integrable": 0,
+                "blocked_audit_failure": 0,
+                "blocked_ambiguous_match": 0,
+                "rolled_back_install_failure": 0,
+            },
+            actions=(
+                SkillSyncAction(
+                    action="aligned_existing",
+                    slug="browser-bot",
+                    display_name="browser-bot",
+                    source_repo_full_name="acme/browser-bot",
+                    repo_url="https://github.com/acme/browser-bot",
+                    relative_root=".",
+                    files=("SKILL.md",),
+                    matched_installed_slug="browser-bot",
+                    matched_installed_path=str(Path("managed") / "browser-bot"),
+                ),
+            ),
+        )
 
 
 class BudgetCollector:
@@ -1050,6 +1098,88 @@ def test_ingest_classification_output_auto_promotes_low_risk_enhancement_candida
     assert audit_payload["manual_attention"] == []
     assert report_payload["summary"]["enhancement_candidates"] == 0
     assert report_payload["summary"]["covered"] == 1
+
+
+def test_ingest_classification_output_writes_skill_sync_report_and_exposes_sync_payload(tmp_path) -> None:
+    from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
+
+    class SingleRepoCollector:
+        def fetch_trending(self, period: str) -> list[TrendingRepo]:
+            return [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period=period,
+                    rank=1,
+                    repo_full_name="acme/browser-bot",
+                    repo_url="https://github.com/acme/browser-bot",
+                    description="Browser automation agent for websites.",
+                    language="Python",
+                    stars=100,
+                    forks=10,
+                )
+            ]
+
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=tmp_path / "source",
+            relative_root=".",
+            files=("SKILL.md",),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    skill_sync_service = StubSkillSyncService()
+    service = build_service(
+        tmp_path,
+        collector=SingleRepoCollector(),
+        repository_analysis_service=analysis_service,
+        skill_sync_service=skill_sync_service,
+    )
+    staged = service.build_classification_input(date(2026, 3, 20))
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/browser-bot",
+                    "capabilities": [
+                        {
+                            "capability_id": "browser_automation",
+                            "confidence": 0.93,
+                            "reason": "The repo centers on browser workflow automation.",
+                            "summary": "Automates browser workflows for websites.",
+                            "needs_review": False,
+                            "source_label": "codex",
+                        }
+                    ],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_classification_output(date(2026, 3, 20), output_path)
+    report_payload = json.loads(result.json_report_path.read_text(encoding="utf-8"))
+    sync_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "skill-sync-report.json").read_text(encoding="utf-8"))
+
+    assert skill_sync_service.calls
+    assert skill_sync_service.calls[0][1][0].slug == "browser-bot"
+    assert skill_sync_service.calls[0][1][0].capability_ids == ("browser_automation",)
+    assert result.skill_sync_summary["aligned_existing"] == 1
+    assert result.skill_sync_actions[0]["action"] == "aligned_existing"
+    assert sync_payload["summary"]["aligned_existing"] == 1
+    assert report_payload["skill_sync_summary"]["aligned_existing"] == 1
+    assert report_payload["skill_sync_actions"][0]["action"] == "aligned_existing"
 
 
 def test_ingest_classification_output_writes_taxonomy_gap_candidates_for_unclassified_repositories(tmp_path) -> None:

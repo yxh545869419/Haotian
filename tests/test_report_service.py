@@ -326,6 +326,73 @@ def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
     assert payload["executive_summary"]["taxonomy_gap_count"] == 2
 
 
+def test_report_payload_includes_skill_sync_summary_and_actions(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    run_path = run_dir / "2026-03-25"
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("skill-sync-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-25",
+                "summary": {
+                    "config_ready": True,
+                    "candidate_count": 1,
+                    "action_count": 1,
+                    "aligned_existing": 1,
+                    "installed_new": 0,
+                    "discarded_non_integrable": 0,
+                    "blocked_audit_failure": 0,
+                    "blocked_ambiguous_match": 0,
+                    "rolled_back_install_failure": 0,
+                },
+                "actions": [
+                    {
+                        "action": "aligned_existing",
+                        "slug": "browser-bot",
+                        "display_name": "browser-bot",
+                        "source_repo_full_name": "acme/browser-bot",
+                        "repo_url": "https://github.com/acme/browser-bot",
+                        "relative_root": ".",
+                        "files": ["SKILL.md"],
+                        "matched_installed_slug": "browser-bot",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = service._build_report_payload(
+        date(2026, 3, 25),
+        {
+            "summary": [],
+            "manual_attention": [],
+            "new_capabilities": [],
+            "enhancement_candidates": [],
+            "covered": [],
+            "risks": [],
+        },
+        {
+            "today": (),
+            "previous": (),
+            "new": (),
+            "dropped": (),
+        },
+    )
+
+    assert payload["skill_sync_summary"]["aligned_existing"] == 1
+    assert payload["skill_sync_actions"][0]["action"] == "aligned_existing"
+    assert payload["artifact_links"]["skill_sync_report"].endswith("skill-sync-report.json")
+
+
 @pytest.mark.parametrize(
     ("payload", "description"),
     [
