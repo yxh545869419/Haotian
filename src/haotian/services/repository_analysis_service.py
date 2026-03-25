@@ -63,12 +63,7 @@ class RepositoryAnalysisResult:
             ],
             "analysis_limits": list(self.analysis_limits),
             "discovered_skill_packages": [
-                {
-                    "skill_name": package.skill_name,
-                    "package_root": str(package.package_root),
-                    "relative_root": package.relative_root,
-                    "files": list(package.files),
-                }
+                package.to_serialized_payload()
                 for package in self.discovered_skill_packages
             ],
         }
@@ -102,12 +97,7 @@ class RepositoryAnalysisResult:
             ],
             "analysis_limits": [*self.analysis_limits],
             "discovered_skill_packages": [
-                {
-                    "skill_name": package.skill_name,
-                    "package_root": str(package.package_root),
-                    "relative_root": package.relative_root,
-                    "files": [*package.files],
-                }
+                package.to_serialized_payload()
                 for package in self.discovered_skill_packages
             ],
         }

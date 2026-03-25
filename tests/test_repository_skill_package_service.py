@@ -138,14 +138,14 @@ def test_analysis_result_exposes_discovered_skill_packages_in_classification_fie
     assert payload["discovered_skill_packages"] == [
         {
             "skill_name": "repo",
-            "package_root": str(repo),
             "relative_root": ".",
             "files": ["SKILL.md"],
         },
         {
             "skill_name": "browser",
-            "package_root": str(repo / "skills" / "browser"),
             "relative_root": "skills/browser",
             "files": ["SKILL.md", "skill_runner.py"],
         },
     ]
+    assert "package_root" not in payload["discovered_skill_packages"][0]
+    assert "package_root" not in payload["discovered_skill_packages"][1]

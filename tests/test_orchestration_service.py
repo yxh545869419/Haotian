@@ -143,7 +143,12 @@ class StubRepositoryAnalysisService:
         )
 
 
-def make_layered_result(repo_full_name: str, *, repo_url: str = "https://github.com/acme/demo") -> RepositoryAnalysisResult:
+def make_layered_result(
+    repo_full_name: str,
+    *,
+    repo_url: str = "https://github.com/acme/demo",
+    discovered_skill_packages=(),
+) -> RepositoryAnalysisResult:
     return RepositoryAnalysisResult(
         repo_full_name=repo_full_name,
         repo_url=repo_url,
@@ -168,6 +173,7 @@ def make_layered_result(repo_full_name: str, *, repo_url: str = "https://github.
             ),
         ),
         analysis_limits=(),
+        discovered_skill_packages=discovered_skill_packages,
     )
 
 
@@ -613,10 +619,30 @@ def test_ingest_classification_output_uses_repo_analysis_snapshots_for_final_cou
 
 def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_advances_by_90_days(tmp_path) -> None:
     from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
+    from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
 
+    package_root = tmp_path / "source"
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=package_root,
+            relative_root=".",
+            files=("SKILL.md",),
+        ),
+        DiscoveredSkillPackage(
+            skill_name="browser",
+            package_root=package_root / "skills" / "browser",
+            relative_root="skills/browser",
+            files=("SKILL.md", "skill_runner.py"),
+        ),
+    )
     analysis_service = StubRepositoryAnalysisService(
         {
-            "acme/alpha": make_layered_result("acme/alpha", repo_url="https://github.com/acme/alpha"),
+            "acme/alpha": make_layered_result(
+                "acme/alpha",
+                repo_url="https://github.com/acme/alpha",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
         }
     )
     collector = MutableCollector(["acme/alpha"])
@@ -638,6 +664,7 @@ def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_
     )
 
     first = service.build_classification_input(date(2026, 3, 20))
+    first_payload = json.loads(first.classification_input_path.read_text(encoding="utf-8"))
     assert first.deep_analyzed_repos == 1
     assert first.cached_reused_repos == 0
     assert analysis_service.calls == [("acme/alpha", True)]
@@ -648,6 +675,19 @@ def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_
     assert second.deep_analyzed_repos == 1
     assert second.cached_reused_repos == 1
     assert analysis_service.calls == []
+    assert first_payload["items"][0]["discovered_skill_packages"] == [
+        {
+            "skill_name": "browser-bot",
+            "relative_root": ".",
+            "files": ["SKILL.md"],
+        },
+        {
+            "skill_name": "browser",
+            "relative_root": "skills/browser",
+            "files": ["SKILL.md", "skill_runner.py"],
+        },
+    ]
+    assert second_payload["items"][0]["discovered_skill_packages"] == first_payload["items"][0]["discovered_skill_packages"]
     assert second_payload["items"][0]["analysis_source"] == "cache"
 
     metadata_fetcher.payloads["acme/alpha"] = RepositoryMetadataPayload(

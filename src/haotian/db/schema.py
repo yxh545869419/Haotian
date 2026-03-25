@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS repo_analysis_cache (
     probe_summary TEXT NOT NULL DEFAULT '',
     evidence_snippets TEXT NOT NULL DEFAULT '[]',
     analysis_limits TEXT NOT NULL DEFAULT '[]',
+    discovered_skill_packages TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -210,6 +211,7 @@ def initialize_schema(database_url: str | None = None) -> None:
         connection.execute(CREATE_CAPABILITY_APPROVALS_INDEX_SQL)
         _migrate_repo_capabilities_table(connection)
         _migrate_repo_analysis_snapshots_table(connection)
+        _migrate_repo_analysis_cache_table(connection)
         _migrate_capability_approvals_table(connection)
         connection.commit()
 
@@ -262,6 +264,17 @@ def _migrate_repo_analysis_snapshots_table(connection: sqlite3.Connection) -> No
     if columns and "analysis_source" not in columns:
         connection.execute(
             "ALTER TABLE repo_analysis_snapshots ADD COLUMN analysis_source TEXT NOT NULL DEFAULT 'fresh'"
+        )
+
+
+def _migrate_repo_analysis_cache_table(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(repo_analysis_cache)").fetchall()
+    }
+    if columns and "discovered_skill_packages" not in columns:
+        connection.execute(
+            "ALTER TABLE repo_analysis_cache ADD COLUMN discovered_skill_packages TEXT NOT NULL DEFAULT '[]'"
         )
 
 

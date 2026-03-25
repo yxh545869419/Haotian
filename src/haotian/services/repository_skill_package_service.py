@@ -13,6 +13,30 @@ class DiscoveredSkillPackage:
     relative_root: str
     files: tuple[str, ...]
 
+    def to_serialized_payload(self) -> dict[str, object]:
+        return {
+            "skill_name": self.skill_name,
+            "relative_root": self.relative_root,
+            "files": list(self.files),
+        }
+
+    @classmethod
+    def from_serialized_payload(cls, payload: dict[str, object]) -> "DiscoveredSkillPackage":
+        relative_root = str(payload.get("relative_root", "")).strip()
+        package_root = Path(".") if relative_root == "." else Path(relative_root)
+        files_raw = payload.get("files", ())
+        files = tuple(
+            str(item).strip()
+            for item in files_raw
+            if item is not None and str(item).strip()
+        )
+        return cls(
+            skill_name=str(payload.get("skill_name", "")).strip(),
+            package_root=package_root,
+            relative_root=relative_root,
+            files=files,
+        )
+
 
 class RepositorySkillPackageService:
     """Find skill package manifests and inventory their local file sets."""
