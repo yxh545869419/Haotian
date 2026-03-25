@@ -64,6 +64,9 @@ The clone strategy remains `git clone --depth 1`. This limits Git history only; 
 The probe logic changes in two ways:
 
 - High-priority skill paths:
+  - `SKILL.md`
+  - `AGENTS.md`
+  - `codex.md`
   - `skills/**/SKILL.md`
   - `skills/**/AGENTS.md`
   - `skills/**/codex.md`
@@ -88,31 +91,45 @@ Inputs:
 
 - Active capabilities from the registry
 - Taxonomy gap candidates
-- Local installed skill inventories from:
-  - `C:\Users\AVALLY-SH-027\.agents\skills`
-  - `E:\CodexHome\skills`
+- Local installed skill inventories from config-driven skill roots
+  - Haotian reads skill roots from settings or environment.
+  - Current machine paths are defaults/examples, not hard-coded requirements.
+  - Discovery preserves an explicit root precedence order.
 
 Process:
 
 1. Build a canonical local skill inventory:
    - skill name
    - source path
+   - resolved canonical path
    - description
    - audit status
    - managed/unmanaged flag
    - alias set
 2. Evaluate whether each candidate repository can become a Codex skill:
-   - Accept only repositories with usable skill packaging evidence.
+   - Minimum acceptable packaging evidence is:
+     - either root-level `SKILL.md` or nested `skills/**/SKILL.md`
+     - plus at least one of `AGENTS.md`, `codex.md`, `scripts/**`, or `references/**`
+     - plus probe evidence that the package targets Codex or a compatible skill runtime
    - Reject repositories that cannot be turned into a valid Codex skill package.
 3. Audit candidate skills before any install or alignment action.
-4. If an equivalent or near-equivalent local skill already exists and passes audit:
+   - Resolve real paths before audit and install decisions.
+   - Reject aliasing or symlink escapes outside configured skill roots or the staged install directory.
+4. Match candidates to local skills using a deterministic order:
+   - exact canonical name match
+   - declared alias match
+   - normalized slug match
+   - description/evidence similarity above an explicit threshold
+   - if multiple matches remain, prefer the highest-precedence configured skill root, then managed skills over unmanaged skills
+5. If a matching local skill already exists and passes audit:
    - Record canonical alignment and alias mapping.
    - Do not mutate the upstream third-party repository.
    - Prefer a managed wrapper or metadata mapping over direct upstream edits.
-5. If no equivalent skill exists and the candidate is integrable plus audit-safe:
+6. If no matching skill exists and the candidate is integrable plus audit-safe:
    - Generate a Haotian-managed skill package.
-   - Install it into the local Codex skill system.
-6. If the candidate is not integrable or fails audit:
+   - Install it into the local Codex skill system with an atomic staging-and-swap flow.
+   - On install failure, roll back completely and report the failure.
+7. If the candidate is not integrable or fails audit:
    - Mark it as discarded.
    - Do not install it.
 
@@ -124,6 +141,17 @@ Outputs:
   - newly installed skills
   - discarded candidates
   - audit failures
+  - rolled back installs
+  - blocked matches
+
+`skill_sync_actions` uses a closed enum:
+
+- `aligned_existing`
+- `installed_new`
+- `discarded_non_integrable`
+- `blocked_audit_failure`
+- `blocked_ambiguous_match`
+- `rolled_back_install_failure`
 
 #### 4. Automation Boundary
 
@@ -158,19 +186,24 @@ Run artifacts will add:
 
 - `skill-sync-report.json`
 
-The probe result model will add richer skill-package signals and preserve enough evidence to explain why a repo was installed, aligned, or discarded.
+The probe result model will add richer skill-package signals and preserve enough evidence to explain why a repo was installed, aligned, blocked, rolled back, or discarded.
 
 ### Safety Rules
 
 - No install without audit.
+- No install without containment checks on resolved paths.
 - No direct rewrite of third-party upstream skill repositories.
 - No promotion of repositories that do not contain acceptable Codex skill packaging evidence.
 - No fallback from audit failure to silent install.
+- No partial install; failed installs must roll back atomically.
 
 ### Testing
 
 - Unit tests for report payload and Markdown rendering with taxonomy gaps.
 - Unit tests for probe matching of:
+  - `SKILL.md`
+  - `AGENTS.md`
+  - `codex.md`
   - `skills/**/SKILL.md`
   - `skills/**/AGENTS.md`
   - `skills/**/codex.md`
@@ -254,6 +287,9 @@ clone 策略保持 `git clone --depth 1`。这里的 `depth 1` 只限制 Git 历
 真正要改的是 probe：
 
 - 新增高优先级 skill 路径：
+  - `SKILL.md`
+  - `AGENTS.md`
+  - `codex.md`
   - `skills/**/SKILL.md`
   - `skills/**/AGENTS.md`
   - `skills/**/codex.md`
@@ -278,31 +314,45 @@ clone 策略保持 `git clone --depth 1`。这里的 `depth 1` 只限制 Git 历
 
 - registry 中的 active capabilities
 - taxonomy gap candidates
-- 本机 skill 目录：
-  - `C:\Users\AVALLY-SH-027\.agents\skills`
-  - `E:\CodexHome\skills`
+- 配置驱动的本机 skill roots
+  - Haotian 从 settings 或环境变量读取 skill roots
+  - 当前机器路径只是默认值或示例，不写死成唯一要求
+  - 发现逻辑需要保留明确的 root precedence 顺序
 
 流程：
 
 1. 建立本机 skill inventory：
    - skill 名称
    - 来源路径
+   - 解析后的 canonical path
    - 描述
    - 审计状态
    - 是否为 Haotian managed
    - alias 集合
 2. 判断每个候选仓库是否真的能整合成 Codex skill：
-   - 只有具有可用 skill packaging 证据的仓库才进入下一步
+   - 最低可接受 skill packaging 证据为：
+     - 根层 `SKILL.md` 或嵌套 `skills/**/SKILL.md`
+     - 再加上 `AGENTS.md`、`codex.md`、`scripts/**`、`references/**` 里的至少一种
+     - 同时 probe 证据必须表明它面向 Codex 或兼容 skill runtime
    - 不能整理成有效 Codex skill 包的仓库直接拒绝
 3. 在任何安装或对齐动作前，先做 skill 审计
-4. 如果本机已经存在等价或近似 skill，且审计通过：
+   - 在审计和安装前先解析真实路径
+   - 拒绝任何越出 skill root 或 staged install 目录的 alias / symlink escape
+4. 用确定性的匹配顺序把候选和本机 skill 对齐：
+   - canonical 名完全匹配
+   - alias 匹配
+   - normalized slug 匹配
+   - 描述 / 证据相似度超过显式阈值
+   - 如果仍然多解，则优先级按 configured skill root 顺序，再按 managed 优先于 unmanaged
+5. 如果本机已经存在匹配 skill，且审计通过：
    - 建立 canonical 对齐和 alias 映射
    - 不直接改写第三方上游仓库
    - 优先用 managed wrapper 或 metadata mapping，而不是改第三方本体
-5. 如果本机不存在对应 skill，且候选可整合并且审计通过：
+6. 如果本机不存在对应 skill，且候选可整合并且审计通过：
    - 生成 Haotian-managed skill package
-   - 安装到本机 Codex skill 体系
-6. 如果候选无法整合或审计失败：
+   - 用原子化 staging-and-swap 流程安装到本机 Codex skill 体系
+   - 如果安装失败，必须完整回滚并写入失败记录
+7. 如果候选无法整合或审计失败：
    - 标记为 discarded
    - 不做安装
 
@@ -314,6 +364,17 @@ clone 策略保持 `git clone --depth 1`。这里的 `depth 1` 只限制 Git 历
   - 新安装 skill
   - 已舍弃候选
   - 审计失败项
+  - 已回滚安装
+  - 因匹配歧义而阻断的项
+
+`skill_sync_actions` 使用封闭枚举：
+
+- `aligned_existing`
+- `installed_new`
+- `discarded_non_integrable`
+- `blocked_audit_failure`
+- `blocked_ambiguous_match`
+- `rolled_back_install_failure`
 
 #### 4. 自动化边界
 
@@ -348,19 +409,24 @@ Codex 只负责：
 
 - `skill-sync-report.json`
 
-probe 结果模型也会补充更明确的 skill-package 信号，并保留足够的证据来解释为什么某个仓库最终被安装、对齐或舍弃。
+probe 结果模型也会补充更明确的 skill-package 信号，并保留足够的证据来解释为什么某个仓库最终被安装、对齐、阻断、回滚或舍弃。
 
 ### 安全规则
 
 - 不审计，不安装。
+- 不做 resolved-path containment check，不安装。
 - 不直接改写第三方上游 skill 仓库。
 - 没有合格 Codex skill packaging 证据的仓库，不推进安装。
 - 审计失败后不能静默回退成安装成功。
+- 不能出现半安装状态；安装失败必须原子回滚。
 
 ### 测试
 
 - 报告 payload 与 Markdown 渲染的 taxonomy gap 测试
 - 针对以下路径的 probe 单测：
+  - `SKILL.md`
+  - `AGENTS.md`
+  - `codex.md`
   - `skills/**/SKILL.md`
   - `skills/**/AGENTS.md`
   - `skills/**/codex.md`
