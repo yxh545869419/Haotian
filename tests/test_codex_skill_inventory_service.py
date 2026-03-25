@@ -88,3 +88,15 @@ def test_codex_skill_inventory_uses_configured_managed_root_when_roots_omitted(
     assert inventory["browser-helper"].source_root == shared.resolve()
     assert inventory["browser-helper"].skill_dir == helper_skill.resolve()
     assert inventory["browser-helper"].managed is False
+
+
+def test_codex_skill_inventory_stops_at_first_skill_boundary(tmp_path) -> None:
+    root = tmp_path / "skills"
+    parent = _write_skill(root, "parent-skill", description="Parent skill")
+    nested = _write_skill(parent, "nested-skill", description="Nested skill")
+
+    inventory = CodexSkillInventoryService((root,)).scan()
+
+    assert list(inventory) == ["parent-skill"]
+    assert inventory["parent-skill"].skill_dir == parent.resolve()
+    assert nested.resolve() not in {record.skill_dir for record in inventory.values()}

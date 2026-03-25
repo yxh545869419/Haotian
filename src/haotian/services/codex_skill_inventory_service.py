@@ -82,6 +82,7 @@ class CodexSkillInventoryService:
             dirs[:] = [name for name in dirs if not (current_path / name).is_symlink()]
             if "SKILL.md" in files:
                 candidates.append(current_path)
+                dirs[:] = []
 
         candidates.sort(key=lambda path: (0 if path == root else 1, path.relative_to(root).as_posix().casefold()))
         return tuple(candidates)

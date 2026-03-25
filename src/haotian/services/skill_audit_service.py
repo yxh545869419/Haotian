@@ -79,12 +79,19 @@ class SkillAuditService:
             "--json",
             str(target_path),
         )
-        completed = subprocess.run(
-            list(command),
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            completed = subprocess.run(
+                list(command),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            return self._error_result(
+                target=target_path,
+                command=command,
+                stderr=str(exc),
+            )
         payload = self._parse_payload(completed.stdout)
         status, overall_verdict = self._normalize_status(payload, completed.returncode)
         reports = self._parse_reports(payload)
@@ -100,14 +107,32 @@ class SkillAuditService:
             returncode=completed.returncode,
             status=status,
             overall_verdict=overall_verdict,
-            overall_score=int(payload.get("overall_score", 0)) if payload else 0,
-            skill_count=int(payload.get("skill_count", 0)) if payload else 0,
+            overall_score=self._coerce_int(payload.get("overall_score", 0)) if payload else 0,
+            skill_count=self._coerce_int(payload.get("skill_count", 0)) if payload else 0,
             generated_at=str(payload.get("generated_at", "")) if payload else "",
             reports=reports,
             findings=findings,
             stdout=completed.stdout,
             stderr=completed.stderr,
             raw_payload=payload,
+        )
+
+    def _error_result(self, *, target: Path, command: tuple[str, ...], stderr: str) -> SkillAuditResult:
+        return SkillAuditResult(
+            target=target,
+            script_path=self.script_path,
+            command=command,
+            returncode=-1,
+            status="error",
+            overall_verdict="ERROR",
+            overall_score=0,
+            skill_count=0,
+            generated_at="",
+            reports=(),
+            findings=(),
+            stdout="",
+            stderr=stderr,
+            raw_payload=None,
         )
 
     @staticmethod
@@ -138,7 +163,14 @@ class SkillAuditService:
             else:
                 verdict = "ERROR"
 
-        status = verdict.lower() if verdict in {"CLEAN", "REVIEW", "BLOCK"} else "error"
+        status_map = {
+            "CLEAN": "clean",
+            "REVIEW": "review",
+            "LOW": "review",
+            "OBSERVE": "review",
+            "BLOCK": "block",
+        }
+        status = status_map.get(verdict, "error")
         return status, verdict
 
     @staticmethod
@@ -155,12 +187,14 @@ class SkillAuditService:
             if not isinstance(item, dict):
                 continue
             findings_raw = item.get("findings", ())
+            if not isinstance(findings_raw, list):
+                findings_raw = []
             findings = tuple(
                 SkillAuditFinding(
                     rule_id=str(finding.get("rule_id", "")),
                     severity=str(finding.get("severity", "")),
                     file=str(finding.get("file", "")),
-                    line=int(finding.get("line", 0) or 0),
+                    line=SkillAuditService._coerce_int(finding.get("line", 0)),
                     message=str(finding.get("message", "")),
                     evidence=str(finding.get("evidence", "")),
                 )
@@ -169,7 +203,10 @@ class SkillAuditService:
             )
             severity_counts_raw = item.get("severity_counts", {})
             severity_counts = (
-                {str(key): int(value) for key, value in severity_counts_raw.items()}
+                {
+                    str(key): SkillAuditService._coerce_int(value)
+                    for key, value in severity_counts_raw.items()
+                }
                 if isinstance(severity_counts_raw, dict)
                 else {}
             )
@@ -178,15 +215,26 @@ class SkillAuditService:
                     name=str(item.get("name", "")),
                     path=Path(str(item.get("path", ""))).resolve(strict=False),
                     verdict=str(item.get("verdict", "")),
-                    score=int(item.get("score", 0) or 0),
-                    files_scanned=int(item.get("files_scanned", 0) or 0),
+                    score=SkillAuditService._coerce_int(item.get("score", 0)),
+                    files_scanned=SkillAuditService._coerce_int(item.get("files_scanned", 0)),
                     severity_counts=severity_counts,
                     external_urls=tuple(
                         str(url)
                         for url in item.get("external_urls", ())
                         if isinstance(url, str)
-                    ),
+                    )
+                    if isinstance(item.get("external_urls", ()), list)
+                    else (),
                     findings=findings,
                 )
             )
         return tuple(reports)
+
+    @staticmethod
+    def _coerce_int(value: object, default: int = 0) -> int:
+        if isinstance(value, bool):
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
