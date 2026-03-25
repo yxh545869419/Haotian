@@ -87,7 +87,7 @@ class Settings(BaseModel):
                     if name == "codex_skill_roots":
                         values[field.alias or name] = tuple(
                             Path(part)
-                            for part in value.split(os.pathsep)
+                            for part in value.split(";")
                             if part.strip()
                         )
                         break
