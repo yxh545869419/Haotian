@@ -86,7 +86,7 @@ class Settings(BaseModel):
                 if value is not None:
                     if name == "codex_skill_roots":
                         values[field.alias or name] = tuple(
-                            Path(part)
+                            Path(part.strip())
                             for part in value.split(";")
                             if part.strip()
                         )

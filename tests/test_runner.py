@@ -91,7 +91,7 @@ def test_runner_stages_then_finalizes_reports(tmp_path) -> None:
     assert second["cleanup_warnings"] == 0
     assert second["capability_audit"].endswith("capability-audit.json")
     assert second["taxonomy_gap_candidates_report"].endswith("taxonomy-gap-candidates.json")
-    assert second["skill_sync_report"].endswith("skill-sync-report.json")
+    assert second["skill_sync_report"] is None
     assert "auto_promoted_capabilities" in second
     assert "risky_enhancement_candidates" in second
     assert "manual_attention_items" in second

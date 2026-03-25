@@ -28,7 +28,7 @@ def test_settings_default_to_local_run_artifact_paths(monkeypatch) -> None:
 
 
 def test_settings_support_semicolon_separated_codex_skill_roots_and_audit_script(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("CODEX_SKILL_ROOTS", f"{tmp_path / 'skills-a'};{tmp_path / 'skills-b'}")
+    monkeypatch.setenv("CODEX_SKILL_ROOTS", f" {tmp_path / 'skills-a'} ; {tmp_path / 'skills-b'} ")
     monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", str(tmp_path / "managed"))
     monkeypatch.setenv("SKILL_AUDIT_SCRIPT", str(tmp_path / "audit_skill.py"))
 
@@ -37,6 +37,27 @@ def test_settings_support_semicolon_separated_codex_skill_roots_and_audit_script
     assert list(settings.codex_skill_roots) == [tmp_path / "skills-a", tmp_path / "skills-b"]
     assert settings.codex_managed_skill_root == tmp_path / "managed"
     assert settings.skill_audit_script == tmp_path / "audit_skill.py"
+
+
+def test_get_settings_normalizes_codex_skill_paths(monkeypatch, tmp_path) -> None:
+    first_cwd = tmp_path / "first-cwd"
+    first_cwd.mkdir()
+    monkeypatch.chdir(first_cwd)
+    monkeypatch.setenv("CODEX_SKILL_ROOTS", "skills-a;skills-b")
+    monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", "managed")
+    monkeypatch.setenv("SKILL_AUDIT_SCRIPT", "scripts/audit_skill.py")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+
+        assert settings.codex_skill_roots == (
+            (first_cwd / "skills-a").resolve(),
+            (first_cwd / "skills-b").resolve(),
+        )
+        assert settings.codex_managed_skill_root == (first_cwd / "managed").resolve()
+        assert settings.skill_audit_script == (first_cwd / "scripts/audit_skill.py").resolve()
+    finally:
+        get_settings.cache_clear()
 
 
 def test_settings_include_repo_analysis_defaults(monkeypatch) -> None:
