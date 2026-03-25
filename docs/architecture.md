@@ -122,7 +122,7 @@ Haotian 的当前形态是一个 skill-first 仓库：
 
 ```text
 data/
-├── app.db
+├── haotian.db
 ├── reports/
 │   ├── YYYY-MM-DD.md
 │   └── YYYY-MM-DD.json

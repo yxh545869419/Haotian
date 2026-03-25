@@ -58,10 +58,17 @@ class ClassificationArtifactService:
     def run_summary_path(self, report_date: str) -> Path:
         return self.run_dir(report_date) / "run-summary.json"
 
+    def capability_audit_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "capability-audit.json"
+
+    def taxonomy_gap_candidates_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "taxonomy-gap-candidates.json"
+
     def write_classification_input(self, *, report_date: str, items: list[dict[str, object]]) -> Path:
         target = self.classification_input_path(report_date)
         payload = {
             "schema_version": 1,
+            "analysis_format": "deep-repo-v1",
             "report_date": report_date,
             "taxonomy_path": self.taxonomy_path,
             "expected_output_filename": "classification-output.json",
@@ -70,10 +77,53 @@ class ClassificationArtifactService:
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
 
+    def is_current_prepare_artifact(self, report_date: str) -> bool:
+        path = self.classification_input_path(report_date)
+        if not path.exists():
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("analysis_format") == "deep-repo-v1":
+            return True
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return False
+        return all(isinstance(item, dict) and "analysis_depth" in item for item in items)
+
     def write_run_summary(self, *, report_date: str, summary: dict[str, object]) -> Path:
         target = self.run_summary_path(report_date)
         target.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
+
+    def write_json_artifact(self, *, path: Path, payload: object) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def read_classification_input_payload(self, report_date: str) -> dict[str, object]:
+        path = self.classification_input_path(report_date)
+        if not path.exists():
+            raise FileNotFoundError(f"Classification input not found: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Classification input must be a JSON object.")
+        return payload
+
+    def read_classification_input_items(self, report_date: str) -> list[dict[str, object]]:
+        payload = self.read_classification_input_payload(report_date)
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise ValueError("Classification input must include an items array.")
+        normalized: list[dict[str, object]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError(f"Classification input item #{index} must be an object.")
+            normalized.append(item)
+        return normalized
 
     def read_classification_output(self, path: Path) -> list[RepoClassificationRecord]:
         if not path.exists():

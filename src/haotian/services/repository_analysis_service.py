@@ -32,9 +32,11 @@ class RepositoryAnalysisResult:
     probe_summary: str
     evidence_snippets: tuple[EvidenceSnippet, ...]
     analysis_limits: tuple[str, ...]
+    analysis_source: str = "fresh"
 
     def to_classification_input_fields(self) -> dict[str, object]:
         return {
+            "analysis_source": self.analysis_source,
             "analysis_depth": self.analysis_depth,
             "clone_strategy": self.clone_strategy,
             "clone_started": self.clone_started,
@@ -64,6 +66,7 @@ class RepositoryAnalysisResult:
             "snapshot_date": snapshot_date,
             "repo_full_name": self.repo_full_name,
             "repo_url": self.repo_url,
+            "analysis_source": self.analysis_source,
             "analysis_depth": self.analysis_depth,
             "clone_strategy": self.clone_strategy,
             "clone_started": int(self.clone_started),
@@ -206,6 +209,7 @@ class RepositoryAnalysisService:
             probe_summary=probe_result.probe_summary,
             evidence_snippets=probe_result.evidence_snippets,
             analysis_limits=tuple(dict.fromkeys(combined_limits)),
+            analysis_source="fresh",
         )
 
     def _build_budget_fallback(self, *, repo_full_name: str, repo_url: str) -> RepositoryAnalysisResult:
@@ -227,6 +231,7 @@ class RepositoryAnalysisService:
             probe_summary="Deep analysis skipped because the repository budget was exhausted.",
             evidence_snippets=(),
             analysis_limits=("skipped due to deep-analysis budget",),
+            analysis_source="fallback",
         )
 
     def _build_fallback_from_failure(
@@ -262,6 +267,7 @@ class RepositoryAnalysisService:
             probe_summary=f"Fallback analysis used because {reason}.",
             evidence_snippets=(),
             analysis_limits=tuple(dict.fromkeys(combined_limits)),
+            analysis_source="fallback",
         )
 
     @staticmethod

@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS repo_analysis_snapshots (
     snapshot_date TEXT NOT NULL,
     repo_full_name TEXT NOT NULL,
     repo_url TEXT NOT NULL,
+    analysis_source TEXT NOT NULL DEFAULT 'fresh',
     analysis_depth TEXT NOT NULL,
     clone_strategy TEXT NOT NULL,
     clone_started INTEGER NOT NULL DEFAULT 0,
@@ -100,6 +101,30 @@ CREATE TABLE IF NOT EXISTS repo_analysis_snapshots (
 CREATE_REPO_ANALYSIS_SNAPSHOTS_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_repo_analysis_snapshots_snapshot_date
 ON repo_analysis_snapshots (snapshot_date, repo_full_name);
+"""
+
+CREATE_REPO_ANALYSIS_CACHE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS repo_analysis_cache (
+    repo_full_name TEXT PRIMARY KEY,
+    repo_url TEXT NOT NULL,
+    source_pushed_at TEXT,
+    analyzed_at TEXT NOT NULL,
+    analysis_depth TEXT NOT NULL,
+    root_files TEXT NOT NULL DEFAULT '[]',
+    matched_files TEXT NOT NULL DEFAULT '[]',
+    matched_keywords TEXT NOT NULL DEFAULT '[]',
+    architecture_signals TEXT NOT NULL DEFAULT '[]',
+    probe_summary TEXT NOT NULL DEFAULT '',
+    evidence_snippets TEXT NOT NULL DEFAULT '[]',
+    analysis_limits TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_REPO_ANALYSIS_CACHE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_repo_analysis_cache_updated
+ON repo_analysis_cache (updated_at DESC, repo_full_name);
 """
 
 CREATE_CAPABILITY_REGISTRY_TABLE_SQL = f"""
@@ -177,11 +202,14 @@ def initialize_schema(database_url: str | None = None) -> None:
         connection.execute(CREATE_REPO_CAPABILITIES_INDEX_SQL)
         connection.execute(CREATE_REPO_ANALYSIS_SNAPSHOTS_TABLE_SQL)
         connection.execute(CREATE_REPO_ANALYSIS_SNAPSHOTS_INDEX_SQL)
+        connection.execute(CREATE_REPO_ANALYSIS_CACHE_TABLE_SQL)
+        connection.execute(CREATE_REPO_ANALYSIS_CACHE_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_REGISTRY_TABLE_SQL)
         connection.execute(CREATE_CAPABILITY_REGISTRY_INDEX_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_TABLE_SQL)
         connection.execute(CREATE_CAPABILITY_APPROVALS_INDEX_SQL)
         _migrate_repo_capabilities_table(connection)
+        _migrate_repo_analysis_snapshots_table(connection)
         _migrate_capability_approvals_table(connection)
         connection.commit()
 
@@ -224,6 +252,17 @@ def _migrate_repo_capabilities_table(connection: sqlite3.Connection) -> None:
         """
     )
     connection.execute("DROP TABLE repo_capabilities_legacy")
+
+
+def _migrate_repo_analysis_snapshots_table(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(repo_analysis_snapshots)").fetchall()
+    }
+    if columns and "analysis_source" not in columns:
+        connection.execute(
+            "ALTER TABLE repo_analysis_snapshots ADD COLUMN analysis_source TEXT NOT NULL DEFAULT 'fresh'"
+        )
 
 
 def _migrate_capability_approvals_table(connection: sqlite3.Connection) -> None:

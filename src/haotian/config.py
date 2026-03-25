@@ -20,7 +20,7 @@ class Settings(BaseModel):
     """Runtime settings sourced from environment variables."""
 
     database_url: str = Field(
-        default="sqlite:///./data/app.db",
+        default="sqlite:///./data/haotian.db",
         alias="DATABASE_URL",
         description="Database connection URL.",
     )
@@ -50,7 +50,7 @@ class Settings(BaseModel):
     max_deep_analysis_repos: int = Field(
         default=12,
         alias="MAX_DEEP_ANALYSIS_REPOS",
-        description="Maximum number of repositories to include in deep analysis.",
+        description="Maximum number of repositories to analyze in each deep-analysis batch.",
         gt=0,
     )
     report_dir: Path = Field(

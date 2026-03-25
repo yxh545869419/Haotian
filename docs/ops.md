@@ -15,7 +15,7 @@ python start_haotian.py --date 2026-03-23
 
 第一次运行通常会得到 `awaiting_classification`。
 
-这类运行会先在 `TMP_REPO_DIR` 下创建临时 clone，按边界限制做 probe，然后把 `analysis_depth`、`matched_files`、`probe_summary` 和 `evidence_snippets` 写进运行快照。分析完成后会尝试删除临时 clone，通常会成功；如果清理失败，临时工作区可能会保留，并会通过 cleanup warnings / cleanup_completed state 暴露。
+这类运行会先在 `TMP_REPO_DIR` 下创建临时 clone，按边界限制做 probe，然后把 `analysis_depth`、`matched_files`、`probe_summary` 和 `evidence_snippets` 写进运行快照。分析完成后会尝试删除临时 clone，通常会成功；如果清理失败，临时工作区可能会保留，并会通过 cleanup warnings / cleanup_completed state 暴露。程序会按批次自动继续处理当天所有需要深挖的仓库；如果同名仓库已有历史深挖结果，会直接复用，只有当它再次上榜且 `pushed_at` 相比缓存记录推进至少 90 天时，才会重新深挖。
 
 ## 标准操作流程
 
@@ -81,9 +81,16 @@ python start_haotian.py --date 2026-03-23
 
 - `data/reports/2026-03-23.md`
 - `data/reports/2026-03-23.json`
+- `data/runs/2026-03-23/capability-audit.json`
+- `data/runs/2026-03-23/taxonomy-gap-candidates.json`
 - `data/runs/2026-03-23/run-summary.json`
 
-报告中的能力条目会带上 evidence-backed sections，通常包括分析深度、命中文件和证据摘录；如果看到 `fallback analysis`，说明至少部分贡献证据来自 fallback analysis。优先查看 `analysis_depth`、`matched_files` 和 `evidence_snippets`，再判断这次保留了多少证据。
+Markdown 报告现在是管理摘要，适合人快速阅读；JSON 报告是程序后续识别内容的标准结构。后续自动化应优先读取 `report_format`、`executive_summary`、`highlights`、`capability_cards` 和 `artifact_links`，不要依赖解析自由文本 Markdown。能力卡片里仍然会保留分析深度、回退与清理状态等关键字段；如果看到 `fallback analysis`，说明至少部分贡献证据来自 fallback analysis。`run-summary.json` 中的 `cached_reused_repos` 表示本轮复用了历史深挖证据的仓库数量。
+
+finalize 之后会额外输出：
+
+- `capability-audit.json`：自动增强审计结果，包括自动提升项、仍有风险的增强候选，以及需要人工关注的内容
+- `taxonomy-gap-candidates.json`：当天未能落入现有 taxonomy 的仓库候选，用于后续扩充 taxonomy
 
 ## 常用检查
 
@@ -142,7 +149,7 @@ python -m pip install -e .
 
 ### 深度分析预算耗尽
 
-如果仓库数量超过 `MAX_DEEP_ANALYSIS_REPOS`，后续仓库会自动进入 fallback analysis。此时部分分析会退化为保底证据，适合保守分类，不适合强行推断；请结合 `analysis_depth`、`matched_files` 和 `evidence_snippets` 判断证据保留程度。
+`MAX_DEEP_ANALYSIS_REPOS` 现在表示单个深度分析批次的大小，不再表示整轮只允许分析这么多仓库。程序会自动继续处理后续批次，因此正常情况下不会再因为仓库数量多而直接触发 budget fallback。只有 clone 或 probe 本身失败时，相关仓库才会进入 fallback analysis。
 
 ## 不再支持的旧入口
 
