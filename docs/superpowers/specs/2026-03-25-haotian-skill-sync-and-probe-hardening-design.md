@@ -119,8 +119,8 @@ Process:
    - exact canonical name match
    - declared alias match
    - normalized slug match
-   - description/evidence similarity above an explicit threshold
-   - if multiple matches remain, prefer the highest-precedence configured skill root, then managed skills over unmanaged skills
+   - description/evidence similarity using normalized token-set Jaccard similarity across name, aliases, description, matched keywords, and architecture signals; default threshold `>= 0.72`
+   - if multiple matches remain, prefer the highest similarity score, then the highest-precedence configured skill root, then managed skills over unmanaged skills, then lexicographic skill name as the final tie-break
 5. If a matching local skill already exists and passes audit:
    - Record canonical alignment and alias mapping.
    - Do not mutate the upstream third-party repository.
@@ -342,8 +342,8 @@ clone 策略保持 `git clone --depth 1`。这里的 `depth 1` 只限制 Git 历
    - canonical 名完全匹配
    - alias 匹配
    - normalized slug 匹配
-   - 描述 / 证据相似度超过显式阈值
-   - 如果仍然多解，则优先级按 configured skill root 顺序，再按 managed 优先于 unmanaged
+   - 描述 / 证据相似度采用标准化 token-set Jaccard，相似度输入包括名称、aliases、description、matched keywords 与 architecture signals，默认阈值 `>= 0.72`
+   - 如果仍然多解，则依次按最高相似度分、configured skill root 顺序、managed 优先于 unmanaged、最后按 skill 名字典序打破平局
 5. 如果本机已经存在匹配 skill，且审计通过：
    - 建立 canonical 对齐和 alias 映射
    - 不直接改写第三方上游仓库
