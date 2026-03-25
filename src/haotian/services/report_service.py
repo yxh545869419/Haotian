@@ -489,7 +489,12 @@ class ReportService:
         path = self.run_dir / target_date.isoformat() / "taxonomy-gap-candidates.json"
         if not path.exists():
             return []
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return []
+        if not isinstance(payload, dict):
+            return []
         candidates = payload.get("candidates", [])
         if not isinstance(candidates, list):
             return []
@@ -497,13 +502,17 @@ class ReportService:
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 continue
+            repo_full_names_raw = candidate.get("repo_full_names", [])
+            if not isinstance(repo_full_names_raw, (list, tuple)):
+                continue
+            repo_full_names = tuple(str(repo) for repo in repo_full_names_raw if repo)
             normalized.append(
                 {
                     "candidate_id": str(candidate.get("candidate_id", "")),
                     "display_name": str(candidate.get("display_name", "")),
                     "reason": str(candidate.get("reason", "")),
-                    "repo_full_names": tuple(str(repo) for repo in candidate.get("repo_full_names", []) if repo),
-                    "repo_count": int(candidate.get("repo_count", 0)),
+                    "repo_full_names": repo_full_names,
+                    "repo_count": len(repo_full_names),
                 }
             )
         return normalized
