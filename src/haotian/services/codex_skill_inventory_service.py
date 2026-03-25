@@ -34,15 +34,16 @@ class CodexSkillInventoryService:
         managed_root: Path | str | None = None,
     ) -> None:
         settings = get_settings()
-        if skill_roots is None:
-            skill_roots = settings.codex_skill_roots
         if managed_root is None:
             managed_root = settings.codex_managed_skill_root
-
-        ordered_roots: list[Path | str] = []
-        if managed_root is not None:
-            ordered_roots.append(managed_root)
-        ordered_roots.extend(skill_roots)
+        if skill_roots is None:
+            skill_roots = settings.codex_skill_roots
+            ordered_roots: list[Path | str] = []
+            if managed_root is not None:
+                ordered_roots.append(managed_root)
+            ordered_roots.extend(skill_roots)
+        else:
+            ordered_roots = list(skill_roots)
 
         self.skill_roots = tuple(Path(root) for root in ordered_roots)
         self.managed_root = Path(managed_root).resolve(strict=False) if managed_root is not None else None
