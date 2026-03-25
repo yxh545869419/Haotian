@@ -20,7 +20,7 @@ class Settings(BaseModel):
     """Runtime settings sourced from environment variables."""
 
     database_url: str = Field(
-        default="sqlite:///./data/app.db",
+        default="sqlite:///./data/haotian.db",
         alias="DATABASE_URL",
         description="Database connection URL.",
     )
@@ -50,7 +50,7 @@ class Settings(BaseModel):
     max_deep_analysis_repos: int = Field(
         default=12,
         alias="MAX_DEEP_ANALYSIS_REPOS",
-        description="Maximum number of repositories to include in deep analysis.",
+        description="Maximum number of repositories to analyze in each deep-analysis batch.",
         gt=0,
     )
     report_dir: Path = Field(
@@ -63,6 +63,9 @@ class Settings(BaseModel):
         alias="RUN_DIR",
         description="Directory where staged run artifacts are written.",
     )
+    codex_skill_roots: tuple[Path, ...] = Field(default_factory=tuple, alias="CODEX_SKILL_ROOTS")
+    codex_managed_skill_root: Path | None = Field(default=None, alias="CODEX_MANAGED_SKILL_ROOT")
+    skill_audit_script: Path | None = Field(default=None, alias="SKILL_AUDIT_SCRIPT")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -81,6 +84,13 @@ class Settings(BaseModel):
             for alias in aliases:
                 value = os.getenv(alias)
                 if value is not None:
+                    if name == "codex_skill_roots":
+                        values[field.alias or name] = tuple(
+                            Path(part)
+                            for part in value.split(os.pathsep)
+                            if part.strip()
+                        )
+                        break
                     values[field.alias or name] = value
                     break
         return cls.model_validate(values)
@@ -94,6 +104,11 @@ def get_settings() -> Settings:
     settings.tmp_repo_dir = _resolve_runtime_path(settings.tmp_repo_dir)
     settings.report_dir = _resolve_runtime_path(settings.report_dir)
     settings.run_dir = _resolve_runtime_path(settings.run_dir)
+    settings.codex_skill_roots = tuple(_resolve_runtime_path(path) for path in settings.codex_skill_roots)
+    if settings.codex_managed_skill_root is not None:
+        settings.codex_managed_skill_root = _resolve_runtime_path(settings.codex_managed_skill_root)
+    if settings.skill_audit_script is not None:
+        settings.skill_audit_script = _resolve_runtime_path(settings.skill_audit_script)
     settings.tmp_repo_dir.mkdir(parents=True, exist_ok=True)
     settings.report_dir.mkdir(parents=True, exist_ok=True)
     settings.run_dir.mkdir(parents=True, exist_ok=True)

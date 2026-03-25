@@ -9,6 +9,14 @@ from haotian.config import Settings
 from haotian.config import get_settings
 
 
+def test_settings_default_to_repo_database_path(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.database_url == "sqlite:///./data/haotian.db"
+
+
 def test_settings_default_to_local_run_artifact_paths(monkeypatch) -> None:
     monkeypatch.delenv("REPORT_DIR", raising=False)
     monkeypatch.delenv("RUN_DIR", raising=False)
@@ -17,6 +25,18 @@ def test_settings_default_to_local_run_artifact_paths(monkeypatch) -> None:
 
     assert settings.report_dir == Path("data/reports")
     assert settings.run_dir == Path("data/runs")
+
+
+def test_settings_support_codex_skill_roots_and_audit_script(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CODEX_SKILL_ROOTS", f"{tmp_path / 'skills-a'};{tmp_path / 'skills-b'}")
+    monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", str(tmp_path / "managed"))
+    monkeypatch.setenv("SKILL_AUDIT_SCRIPT", str(tmp_path / "audit_skill.py"))
+
+    settings = Settings.from_env()
+
+    assert list(settings.codex_skill_roots) == [tmp_path / "skills-a", tmp_path / "skills-b"]
+    assert settings.codex_managed_skill_root == tmp_path / "managed"
+    assert settings.skill_audit_script == tmp_path / "audit_skill.py"
 
 
 def test_settings_include_repo_analysis_defaults(monkeypatch) -> None:
