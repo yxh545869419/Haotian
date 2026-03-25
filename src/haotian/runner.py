@@ -114,7 +114,11 @@ def _build_finalize_summary(
         "taxonomy_gap_candidates_report": (
             str(result.taxonomy_gap_candidates_path) if result.taxonomy_gap_candidates_path else None
         ),
-        "skill_sync_report": str(artifact_service.skill_sync_report_path(result.report_date.isoformat())),
+        "skill_sync_report": (
+            str(skill_sync_report_path)
+            if (skill_sync_report_path := artifact_service.skill_sync_report_path(result.report_date.isoformat())).exists()
+            else None
+        ),
         "auto_promoted_capabilities": result.auto_promoted_capabilities,
         "risky_enhancement_candidates": result.risky_enhancement_candidates,
         "manual_attention_items": result.manual_attention_items,
