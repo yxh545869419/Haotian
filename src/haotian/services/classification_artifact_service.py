@@ -64,6 +64,9 @@ class ClassificationArtifactService:
     def taxonomy_gap_candidates_path(self, report_date: str) -> Path:
         return self.run_dir(report_date) / "taxonomy-gap-candidates.json"
 
+    def skill_sync_report_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "skill-sync-report.json"
+
     def write_classification_input(self, *, report_date: str, items: list[dict[str, object]]) -> Path:
         target = self.classification_input_path(report_date)
         payload = {

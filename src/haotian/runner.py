@@ -25,7 +25,7 @@ def run_once(
 
     if output_path.exists() and orchestration_service.artifact_service.is_current_prepare_artifact(resolved_date.isoformat()):
         result = orchestration_service.ingest_classification_output(resolved_date, output_path)
-        summary = _build_finalize_summary(result)
+        summary = _build_finalize_summary(result, orchestration_service.artifact_service)
     else:
         output_path.unlink(missing_ok=True)
         result = orchestration_service.build_classification_input(resolved_date)
@@ -87,7 +87,10 @@ def _build_prepare_summary(result: ClassificationInputBuildResult, output_path: 
     }
 
 
-def _build_finalize_summary(result: DailyPipelineResult) -> dict[str, object]:
+def _build_finalize_summary(
+    result: DailyPipelineResult,
+    artifact_service: ClassificationArtifactService,
+) -> dict[str, object]:
     completed = (
         result.succeeded
         and result.markdown_report_path is not None
@@ -111,6 +114,7 @@ def _build_finalize_summary(result: DailyPipelineResult) -> dict[str, object]:
         "taxonomy_gap_candidates_report": (
             str(result.taxonomy_gap_candidates_path) if result.taxonomy_gap_candidates_path else None
         ),
+        "skill_sync_report": str(artifact_service.skill_sync_report_path(result.report_date.isoformat())),
         "auto_promoted_capabilities": result.auto_promoted_capabilities,
         "risky_enhancement_candidates": result.risky_enhancement_candidates,
         "manual_attention_items": result.manual_attention_items,

@@ -27,6 +27,18 @@ def test_settings_default_to_local_run_artifact_paths(monkeypatch) -> None:
     assert settings.run_dir == Path("data/runs")
 
 
+def test_settings_support_codex_skill_roots_and_audit_script(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CODEX_SKILL_ROOTS", f"{tmp_path / 'skills-a'};{tmp_path / 'skills-b'}")
+    monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", str(tmp_path / "managed"))
+    monkeypatch.setenv("SKILL_AUDIT_SCRIPT", str(tmp_path / "audit_skill.py"))
+
+    settings = Settings.from_env()
+
+    assert list(settings.codex_skill_roots) == [tmp_path / "skills-a", tmp_path / "skills-b"]
+    assert settings.codex_managed_skill_root == tmp_path / "managed"
+    assert settings.skill_audit_script == tmp_path / "audit_skill.py"
+
+
 def test_settings_include_repo_analysis_defaults(monkeypatch) -> None:
     monkeypatch.delenv("TMP_REPO_DIR", raising=False)
     monkeypatch.delenv("MAX_REPO_PROBE_FILES", raising=False)
