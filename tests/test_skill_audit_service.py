@@ -137,6 +137,29 @@ def test_skill_audit_service_normalizes_launch_failure(monkeypatch, tmp_path) ->
     assert result.raw_payload is None
 
 
+@pytest.mark.parametrize("stdout", ["", "not-json"])
+def test_skill_audit_service_errors_on_invalid_top_level_json(
+    monkeypatch, tmp_path, stdout
+) -> None:
+    script_path = tmp_path / "audit_skill.py"
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+
+    def fake_run(command, check, capture_output, text):  # noqa: ANN001
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = SkillAuditService(script_path=script_path).audit(candidate)
+
+    assert result.status == "error"
+    assert result.is_installable() is False
+    assert result.overall_verdict == "ERROR"
+    assert result.returncode == 0
+    assert result.raw_payload is None
+    assert result.stdout == stdout
+
+
 def test_skill_audit_service_degrades_gracefully_for_malformed_report_values(
     monkeypatch, tmp_path
 ) -> None:

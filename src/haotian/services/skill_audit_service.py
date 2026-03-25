@@ -90,9 +90,18 @@ class SkillAuditService:
             return self._error_result(
                 target=target_path,
                 command=command,
+                returncode=-1,
                 stderr=str(exc),
             )
         payload = self._parse_payload(completed.stdout)
+        if payload is None:
+            return self._error_result(
+                target=target_path,
+                command=command,
+                returncode=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
         status, overall_verdict = self._normalize_status(payload, completed.returncode)
         reports = self._parse_reports(payload)
         findings = tuple(
@@ -117,12 +126,20 @@ class SkillAuditService:
             raw_payload=payload,
         )
 
-    def _error_result(self, *, target: Path, command: tuple[str, ...], stderr: str) -> SkillAuditResult:
+    def _error_result(
+        self,
+        *,
+        target: Path,
+        command: tuple[str, ...],
+        returncode: int,
+        stderr: str,
+        stdout: str = "",
+    ) -> SkillAuditResult:
         return SkillAuditResult(
             target=target,
             script_path=self.script_path,
             command=command,
-            returncode=-1,
+            returncode=returncode,
             status="error",
             overall_verdict="ERROR",
             overall_score=0,
@@ -130,7 +147,7 @@ class SkillAuditService:
             generated_at="",
             reports=(),
             findings=(),
-            stdout="",
+            stdout=stdout,
             stderr=stderr,
             raw_payload=None,
         )
