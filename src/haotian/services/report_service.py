@@ -73,10 +73,21 @@ class ReportItem:
 class ReportService:
     """Generate daily markdown reports from collected capability data."""
 
-    def __init__(self, database_url: str | None = None, report_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        database_url: str | None = None,
+        report_dir: Path | None = None,
+        run_dir: Path | None = None,
+    ) -> None:
         settings = get_settings()
         self.database_url = database_url
         self.report_dir = report_dir or settings.report_dir
+        if run_dir is not None:
+            self.run_dir = run_dir
+        elif report_dir is not None:
+            self.run_dir = report_dir.parent / "runs"
+        else:
+            self.run_dir = settings.run_dir
 
     def generate_daily_report(self, report_date: date | str) -> Path:
         target_date = self._normalize_date(report_date)
@@ -84,8 +95,9 @@ class ReportService:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         sections = self._load_sections(target_date)
         repo_snapshot = self._load_repo_snapshot(target_date)
+        payload = self._build_report_payload(target_date, sections, repo_snapshot)
         report_path = self.report_dir / f"{target_date.isoformat()}.md"
-        report_path.write_text(self._render_markdown(target_date, sections, repo_snapshot), encoding="utf-8")
+        report_path.write_text(self._render_markdown(target_date, payload), encoding="utf-8")
         return report_path
 
     def generate_daily_report_json(self, report_date: date | str) -> Path:
@@ -94,25 +106,7 @@ class ReportService:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         sections = self._load_sections(target_date)
         repo_snapshot = self._load_repo_snapshot(target_date)
-        payload = {
-            "report_date": target_date.isoformat(),
-            "summary": {
-                "total_capabilities": len(sections["summary"]),
-                "manual_attention": len(sections["manual_attention"]),
-                "new_capabilities": len(sections["new_capabilities"]),
-                "enhancement_candidates": len(sections["enhancement_candidates"]),
-                "covered": len(sections["covered"]),
-                "risks": len(sections["risks"]),
-            },
-            "repo_snapshot": {
-                key: list(value) for key, value in repo_snapshot.items()
-            },
-            "sections": {
-                key: [item.to_dict() for item in items]
-                for key, items in sections.items()
-                if key != "summary"
-            },
-        }
+        payload = self._build_report_payload(target_date, sections, repo_snapshot)
         report_path = self.report_dir / f"{target_date.isoformat()}.json"
         report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return report_path
@@ -280,68 +274,304 @@ class ReportService:
     def _render_markdown(
         self,
         target_date: date,
-        sections: dict[str, list[ReportItem]],
-        repo_snapshot: dict[str, tuple[str, ...]],
+        payload: dict[str, object],
     ) -> str:
-        summary_items = sections["summary"]
+        summary = payload["summary"]
+        executive_summary = payload["executive_summary"]
+        highlights = payload["highlights"]
+        capability_cards = payload["capability_cards"]
+        taxonomy_gap_candidates = payload["taxonomy_gap_candidates"]
+        artifact_links = payload["artifact_links"]
+        repo_changes = executive_summary["repo_changes"]
         lines = [
-            f"# 每日能力报告 - {target_date.isoformat()}",
+            f"# 每日能力管理摘要 - {target_date.isoformat()}",
             "",
-            "## 摘要",
+            "## 总览",
             "",
-            f"- 能力总数：{len(summary_items)}",
-            f"- 需要人工关注：{len(sections['manual_attention'])}",
-            f"- 新能力：{len(sections['new_capabilities'])}",
-            f"- 增强候选：{len(sections['enhancement_candidates'])}",
-            f"- 已覆盖能力：{len(sections['covered'])}",
-            f"- 风险：{len(sections['risks'])}",
+            f"一句话结论：{executive_summary['headline']}",
+            (
+                "统计："
+                f"能力 {summary['total_capabilities']}｜"
+                f"人工关注 {summary['manual_attention']}｜"
+                f"新增 {summary['new_capabilities']}｜"
+                f"增强候选 {summary['enhancement_candidates']}｜"
+                f"已覆盖 {summary['covered']}｜"
+                f"风险 {summary['risks']}｜"
+                f"taxonomy gap {executive_summary['taxonomy_gap_count']} 类"
+            ),
+            (
+                "仓库变化："
+                f"今日 {repo_changes['today']} 个｜"
+                f"新增 {repo_changes['new']} 个｜"
+                f"移除 {repo_changes['dropped']} 个"
+            ),
+            "",
+            "## 今日重点",
             "",
         ]
-        lines.extend(self._render_repo_snapshot(repo_snapshot))
-        lines.extend(self._render_section("需要人工关注", sections["manual_attention"]))
-        lines.extend(self._render_section("新能力", sections["new_capabilities"]))
-        lines.extend(self._render_section("增强候选", sections["enhancement_candidates"]))
-        lines.extend(self._render_section("已覆盖能力", sections["covered"]))
-        lines.extend(self._render_section("风险", sections["risks"]))
+        if highlights:
+            for highlight in highlights:
+                lines.append(
+                    f"- `{highlight['display_name']}`："
+                    f"{highlight['status_label']}，"
+                    f"优先级{highlight['priority_label']}，"
+                    f"代表仓库 {self._render_repo_list(tuple(highlight['representative_repos']))}。"
+                )
+        else:
+            lines.append("_今日暂无重点事项。_")
+        lines.extend(["", "## 能力摘要", ""])
+        if capability_cards:
+            for card in capability_cards:
+                lines.extend(
+                    [
+                        f"### {card['display_name']} (`{card['capability_id']}`)",
+                        f"状态：{card['status_label']}",
+                        f"优先级：{card['priority_label']}",
+                        f"代表仓库：{self._render_repo_list(tuple(card['representative_repos']))}",
+                        f"判断：{card['summary'] or card['reason'] or '_无_'}",
+                        f"分析备注：{card['analysis']['note']}",
+                        f"建议：{card['suggestion']}",
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["_今日未识别到能力项。_", ""])
+        lines.extend(["", "## Taxonomy Gap 候选", ""])
+        if taxonomy_gap_candidates:
+            for candidate in taxonomy_gap_candidates:
+                repo_text = self._render_repo_list(tuple(candidate["repo_full_names"]))
+                lines.append(
+                    f"- `{candidate['display_name']}`：涉及 {candidate['repo_count']} 个 repo，代表仓库 {repo_text}。"
+                )
+                lines.append(f"  原因：{candidate['reason']}")
+        else:
+            lines.append("_今日未识别到 taxonomy gap 候选。_")
+        lines.append("")
+        lines.extend(
+            [
+                "## 产物路径",
+                "",
+                f"- Markdown 报告：`{artifact_links['markdown_report']}`",
+                f"- JSON 报告：`{artifact_links['json_report']}`",
+                f"- 分类输入：`{artifact_links['classification_input']}`",
+                f"- 分类输出：`{artifact_links['classification_output']}`",
+                f"- 运行摘要：`{artifact_links['run_summary']}`",
+            ]
+        )
         return "\n".join(lines).strip() + "\n"
 
-    def _render_repo_snapshot(self, repo_snapshot: dict[str, tuple[str, ...]]) -> list[str]:
-        today = repo_snapshot["today"]
-        lines = [
-            "## 仓库快照",
-            "",
-            f"- 今日仓库（{len(today)}）：{', '.join(f'`{repo}`' for repo in today) if today else '_无_'}",
-            f"- 相较上一快照新增（{len(repo_snapshot['new'])}）：{', '.join(f'`{repo}`' for repo in repo_snapshot['new']) if repo_snapshot['new'] else '_无_'}",
-            f"- 相较上一快照移除（{len(repo_snapshot['dropped'])}）：{', '.join(f'`{repo}`' for repo in repo_snapshot['dropped']) if repo_snapshot['dropped'] else '_无_'}",
-            "",
-        ]
-        return lines
+    def _build_report_payload(
+        self,
+        target_date: date,
+        sections: dict[str, list[ReportItem]],
+        repo_snapshot: dict[str, tuple[str, ...]],
+    ) -> dict[str, object]:
+        summary = {
+            "total_capabilities": len(sections["summary"]),
+            "manual_attention": len(sections["manual_attention"]),
+            "new_capabilities": len(sections["new_capabilities"]),
+            "enhancement_candidates": len(sections["enhancement_candidates"]),
+            "covered": len(sections["covered"]),
+            "risks": len(sections["risks"]),
+        }
+        cards = [self._build_capability_card(item) for item in sections["summary"]]
+        highlight_items = sorted(sections["summary"], key=self._highlight_sort_key)[:5]
+        taxonomy_gap_candidates = self._load_taxonomy_gap_candidates(target_date)
+        taxonomy_gap_summary = {
+            "candidate_count": len(taxonomy_gap_candidates),
+            "repo_count": sum(candidate["repo_count"] for candidate in taxonomy_gap_candidates),
+        }
+        return {
+            "report_format": "management-summary-v1",
+            "report_date": target_date.isoformat(),
+            "summary": summary,
+            "repo_snapshot": {key: list(value) for key, value in repo_snapshot.items()},
+            "sections": {
+                key: [item.to_dict() for item in items]
+                for key, items in sections.items()
+                if key != "summary"
+            },
+            "executive_summary": {
+                "headline": self._build_headline(summary, taxonomy_gap_summary["candidate_count"]),
+                "counts": summary,
+                "taxonomy_gap_count": taxonomy_gap_summary["candidate_count"],
+                "repo_changes": {
+                    "today": len(repo_snapshot["today"]),
+                    "new": len(repo_snapshot["new"]),
+                    "dropped": len(repo_snapshot["dropped"]),
+                },
+            },
+            "highlights": [self._build_highlight_entry(item) for item in highlight_items],
+            "capability_cards": cards,
+            "taxonomy_gap_summary": taxonomy_gap_summary,
+            "taxonomy_gap_candidates": taxonomy_gap_candidates,
+            "artifact_links": {
+                **self._build_artifact_links(target_date),
+            },
+        }
 
-    def _render_section(self, title: str, items: list[ReportItem]) -> list[str]:
-        lines = [f"## {title}", ""]
-        if not items:
-            lines.extend(["_本节暂无项目。_", ""])
-            return lines
-        for item in items:
-            lines.extend(
-                [
-                    f"### {item.display_name} (`{item.capability_id}`)",
-                    f"- 分析深度：{self._localize_analysis_depth(item.analysis_depth)}",
-                    f"- 回退分析：{'是' if item.fallback_used else '否'}",
-                    f"- 清理完成：{'是' if item.cleanup_completed else '否'}",
-                    f"- 命中文件（{len(item.matched_files)}）：{self._render_file_list(item.matched_files)}",
-                    f"- 需要人工关注：{'是' if item.needs_manual_attention else '否'}",
-                    f"- 来源仓库（{item.repo_count}）：`{ '`, `'.join(item.source_repos) }`",
-                    f"- 榜单周期：`{self._localize_periods(item.periods)}`",
-                    f"- 归类依据：{item.reason}",
-                    f"- 建议动作：{item.suggestion}",
-                    f"- 基础分：{item.base_score:.2f}",
-                    f"- 能力摘要：{item.summary}",
-                    "",
-                ]
+    @staticmethod
+    def _build_headline(summary: dict[str, int], taxonomy_gap_count: int = 0) -> str:
+        manual_attention = (
+            f"{summary['manual_attention']} 个需要人工关注"
+            if summary["manual_attention"]
+            else "暂无人工关注项"
+        )
+        return (
+            f"今日识别 {summary['total_capabilities']} 个能力，"
+            f"{manual_attention}，"
+            f"重点跟进 {summary['enhancement_candidates']} 个增强候选，"
+            f"taxonomy gap {taxonomy_gap_count} 类。"
+        )
+
+    def _build_capability_card(self, item: ReportItem) -> dict[str, object]:
+        priority = self._priority_for_item(item)
+        representative_repos = list(item.source_repos[:3])
+        return {
+            "capability_id": item.capability_id,
+            "canonical_name": item.canonical_name,
+            "display_name": item.display_name,
+            "status": item.status,
+            "status_label": self._localize_status(item.status),
+            "priority": priority,
+            "priority_label": self._localize_priority(priority),
+            "needs_manual_attention": item.needs_manual_attention,
+            "repo_count": item.repo_count,
+            "representative_repos": representative_repos,
+            "source_repos": list(item.source_repos),
+            "periods": list(item.periods),
+            "periods_label": self._localize_periods(item.periods),
+            "reason": item.reason,
+            "summary": item.summary,
+            "suggestion": item.suggestion,
+            "base_score": item.base_score,
+            "analysis": {
+                "depth": item.analysis_depth,
+                "depth_label": self._localize_analysis_depth(item.analysis_depth),
+                "fallback_used": item.fallback_used,
+                "cleanup_completed": item.cleanup_completed,
+                "note": self._build_analysis_note(item),
+            },
+            "evidence_preview": {
+                "matched_files_total": len(item.matched_files),
+                "matched_files_preview": list(item.matched_files[:3]),
+                "snippet_count": len(item.evidence_snippets),
+                "snippets": [snippet.to_dict() for snippet in item.evidence_snippets[:2]],
+            },
+        }
+
+    def _build_highlight_entry(self, item: ReportItem) -> dict[str, object]:
+        priority = self._priority_for_item(item)
+        return {
+            "capability_id": item.capability_id,
+            "display_name": item.display_name,
+            "status": item.status,
+            "status_label": self._localize_status(item.status),
+            "priority": priority,
+            "priority_label": self._localize_priority(priority),
+            "needs_manual_attention": item.needs_manual_attention,
+            "representative_repos": list(item.source_repos[:3]),
+            "summary": item.summary,
+        }
+
+    def _build_artifact_links(self, target_date: date) -> dict[str, str]:
+        report_label = target_date.isoformat()
+        run_base = self.run_dir / report_label
+        return {
+            "markdown_report": str(self.report_dir / f"{report_label}.md"),
+            "json_report": str(self.report_dir / f"{report_label}.json"),
+            "classification_input": str(run_base / "classification-input.json"),
+            "classification_output": str(run_base / "classification-output.json"),
+            "run_summary": str(run_base / "run-summary.json"),
+            "capability_audit": str(run_base / "capability-audit.json"),
+            "taxonomy_gap_candidates": str(run_base / "taxonomy-gap-candidates.json"),
+        }
+
+    def _load_taxonomy_gap_candidates(self, target_date: date) -> list[dict[str, object]]:
+        path = self.run_dir / target_date.isoformat() / "taxonomy-gap-candidates.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        candidates = payload.get("candidates", [])
+        if not isinstance(candidates, list):
+            return []
+        normalized: list[dict[str, object]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            normalized.append(
+                {
+                    "candidate_id": str(candidate.get("candidate_id", "")),
+                    "display_name": str(candidate.get("display_name", "")),
+                    "reason": str(candidate.get("reason", "")),
+                    "repo_full_names": tuple(str(repo) for repo in candidate.get("repo_full_names", []) if repo),
+                    "repo_count": int(candidate.get("repo_count", 0)),
+                }
             )
-            lines.extend(self._render_evidence_snippets(item.evidence_snippets))
-        return lines
+        return normalized
+
+    def _highlight_sort_key(self, item: ReportItem) -> tuple[int, int, float, str]:
+        priority_order = {"high": 0, "medium": 1, "low": 2}
+        status_order = {
+            "risks": 0,
+            "new_capabilities": 1,
+            "enhancement_candidates": 2,
+            "covered": 3,
+        }
+        priority = self._priority_for_item(item)
+        return (
+            priority_order[priority],
+            status_order.get(item.status, 99),
+            -item.base_score,
+            item.capability_id,
+        )
+
+    @staticmethod
+    def _priority_for_item(item: ReportItem) -> str:
+        if item.needs_manual_attention or item.status == "risks":
+            return "high"
+        if item.status in {"new_capabilities", "enhancement_candidates"}:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _localize_priority(priority: str) -> str:
+        labels = {
+            "high": "高",
+            "medium": "中",
+            "low": "低",
+        }
+        return labels.get(priority, priority)
+
+    @staticmethod
+    def _localize_status(status: str) -> str:
+        labels = {
+            "new_capabilities": "新能力",
+            "enhancement_candidates": "增强候选",
+            "covered": "已覆盖",
+            "risks": "风险",
+        }
+        return labels.get(status, status)
+
+    def _build_analysis_note(self, item: ReportItem) -> str:
+        if item.analysis_depth:
+            depth_summary = f"{self._localize_analysis_depth(item.analysis_depth)}分析"
+        else:
+            depth_summary = "未提供分析深度"
+        fallback_summary = "存在回退" if item.fallback_used else "无回退"
+        cleanup_summary = "清理完成" if item.cleanup_completed else "清理未完成"
+        return (
+            f"{depth_summary}；"
+            f"{fallback_summary}；"
+            f"{cleanup_summary}；"
+            f"命中文件 {len(item.matched_files)} 个"
+        )
+
+    @staticmethod
+    def _render_repo_list(repos: tuple[str, ...]) -> str:
+        if not repos:
+            return "_无_"
+        return "、".join(f"`{repo}`" for repo in repos)
 
     @staticmethod
     def _localize_capability_name(capability_id: str, fallback_name: str) -> str:

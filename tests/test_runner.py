@@ -96,6 +96,7 @@ def test_runner_stages_then_finalizes_reports(tmp_path) -> None:
     assert "risky_enhancement_candidates" in second
     assert "manual_attention_items" in second
     assert "taxonomy_gap_candidates" in second
+    assert second["taxonomy_gap_candidates"] == []
 
 
 def test_runner_summary_includes_batch_counts(tmp_path) -> None:

@@ -124,6 +124,42 @@ def _insert_repo_analysis_snapshot(
     )
 
 
+def _write_taxonomy_gap_candidates(
+    run_dir,
+    *,
+    report_date: str,
+) -> None:
+    run_path = run_dir / report_date
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("taxonomy-gap-candidates.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": report_date,
+                "candidates": [
+                    {
+                        "candidate_id": "content_generation",
+                        "display_name": "内容生成 / 营销自动化",
+                        "reason": "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。",
+                        "repo_full_names": ["acme/money-printer"],
+                        "repo_count": 1,
+                    },
+                    {
+                        "candidate_id": "security_analysis",
+                        "display_name": "安全分析",
+                        "reason": "仓库主要面向漏洞、配置错误、密钥或 SBOM 扫描，当前 taxonomy 没有对应能力。",
+                        "repo_full_names": ["acme/security-scanner"],
+                        "repo_count": 1,
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     initialize_schema(database_url)
@@ -204,28 +240,40 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     path = ReportService(database_url=database_url, report_dir=report_dir).generate_daily_report(date(2026, 3, 20))
     content = path.read_text(encoding="utf-8")
 
-    assert "# 每日能力报告 - 2026-03-20" in content
-    assert "能力总数：1" in content
-    assert "今日仓库（2）：`acme/browser-bot`, `acme/extractor`" in content
-    assert "相较上一快照新增（2）：`acme/browser-bot`, `acme/extractor`" in content
-    assert "相较上一快照移除（1）：`acme/old-repo`" in content
+    assert "# 每日能力管理摘要 - 2026-03-20" in content
+    assert "## 总览" in content
+    assert "一句话结论：今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选，taxonomy gap 0 类。" in content
+    assert "统计：能力 1｜人工关注 0｜新增 0｜增强候选 1｜已覆盖 0｜风险 0" in content
+    assert "仓库变化：今日 2 个｜新增 2 个｜移除 1 个" in content
+    assert "## 今日重点" in content
+    assert "`浏览器自动化`：增强候选，优先级中，代表仓库 `acme/browser-bot`。" in content
+    assert "## 能力摘要" in content
     assert "### 浏览器自动化 (`browser_automation`)" in content
-    assert "分析深度：分层" in content
-    assert "回退分析：否" in content
-    assert "清理完成：是" in content
-    assert "命中文件（2）：`README.md`, `workflow.py`" in content
-    assert "来源仓库（1）：`acme/browser-bot`" in content
-    assert "榜单周期：`每日、每周`" in content
-    assert "需要人工关注：否" in content
-    assert "关键证据：" in content
-    assert "`README.md`：Browser automation workflows" in content
-    assert "建议动作：已自动归类为 POC 跟踪项；若需要推进落地再人工复核。" in content
+    assert "状态：增强候选" in content
+    assert "优先级：中" in content
+    assert "代表仓库：`acme/browser-bot`" in content
+    assert "判断：Automates browser workflows." in content
+    assert "分析备注：分层分析；无回退；清理完成；命中文件 2 个" in content
+    assert "建议：已自动归类为 POC 跟踪项；若需要推进落地再人工复核。" in content
+    assert "## 产物路径" in content
 
     json_path = ReportService(database_url=database_url, report_dir=report_dir).generate_daily_report_json("2026-03-20")
     payload = json.loads(json_path.read_text(encoding="utf-8"))
 
+    assert payload["report_format"] == "management-summary-v1"
     assert payload["report_date"] == "2026-03-20"
     assert payload["summary"]["total_capabilities"] == 1
+    assert payload["executive_summary"]["headline"] == "今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选，taxonomy gap 0 类。"
+    assert payload["highlights"][0]["status_label"] == "增强候选"
+    assert payload["highlights"][0]["priority"] == "medium"
+    assert payload["capability_cards"][0]["capability_id"] == "browser_automation"
+    assert payload["capability_cards"][0]["status_label"] == "增强候选"
+    assert payload["capability_cards"][0]["priority"] == "medium"
+    assert payload["capability_cards"][0]["analysis"]["depth_label"] == "分层"
+    assert payload["capability_cards"][0]["evidence_preview"]["matched_files_total"] == 2
+    assert payload["artifact_links"]["classification_output"].endswith("classification-output.json")
+    assert payload["artifact_links"]["capability_audit"].endswith("capability-audit.json")
+    assert payload["artifact_links"]["taxonomy_gap_candidates"].endswith("taxonomy-gap-candidates.json")
     assert payload["repo_snapshot"]["new"] == ["acme/browser-bot", "acme/extractor"]
     assert payload["sections"]["covered"] == []
     item = payload["sections"]["enhancement_candidates"][0]
@@ -235,6 +283,66 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert item["fallback_used"] is False
     assert item["cleanup_completed"] is True
     assert item["evidence_snippets"][0]["path"] == "README.md"
+
+
+def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": ("acme/money-printer", "acme/security-scanner"),
+        "previous": (),
+        "new": ("acme/money-printer", "acme/security-scanner"),
+        "dropped": (),
+    }
+    _write_taxonomy_gap_candidates(run_dir, report_date="2026-03-25")
+
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    assert payload["taxonomy_gap_summary"]["candidate_count"] == 2
+    assert payload["taxonomy_gap_candidates"][0]["display_name"] == "内容生成 / 营销自动化"
+    assert payload["executive_summary"]["taxonomy_gap_count"] == 2
+
+
+def test_markdown_renders_taxonomy_gap_section(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": ("acme/money-printer", "acme/security-scanner"),
+        "previous": (),
+        "new": ("acme/money-printer", "acme/security-scanner"),
+        "dropped": (),
+    }
+    _write_taxonomy_gap_candidates(run_dir, report_date="2026-03-25")
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    markdown = service._render_markdown(date(2026, 3, 25), payload)
+    assert "## Taxonomy Gap 候选" in markdown
+    assert "内容生成 / 营销自动化" in markdown
+    assert "taxonomy gap 2 类" in markdown
 
 
 def test_report_service_marks_fallback_analysis_in_markdown(tmp_path) -> None:
@@ -273,11 +381,9 @@ def test_report_service_marks_fallback_analysis_in_markdown(tmp_path) -> None:
     report_dir = tmp_path / "reports"
     content = ReportService(database_url=database_url, report_dir=report_dir).generate_daily_report("2026-03-20").read_text(encoding="utf-8")
 
-    assert "分析深度：回退" in content
-    assert "回退分析：是" in content
-    assert "清理完成：否" in content
-    assert "命中文件（0）：_无_" in content
-    assert "关键证据：_无_" in content
+    assert "状态：新能力" in content
+    assert "优先级：高" in content
+    assert "分析备注：回退分析；存在回退；清理未完成；命中文件 0 个" in content
 
 
 def test_report_service_preserves_fallback_and_cleanup_from_sparse_joined_rows(tmp_path) -> None:
@@ -356,12 +462,12 @@ def test_report_service_handles_sparse_repo_analysis_snapshot_rows(tmp_path) -> 
     content = service.generate_daily_report("2026-03-20").read_text(encoding="utf-8")
     payload = json.loads(service.generate_daily_report_json("2026-03-20").read_text(encoding="utf-8"))
 
-    assert "分析深度：_未提供_" in content
-    assert "回退分析：是" in content
-    assert "清理完成：是" in content
-    assert "命中文件（0）：_无_" in content
-    assert "关键证据：_无_" in content
+    assert "状态：新能力" in content
+    assert "优先级：中" in content
+    assert "分析备注：未提供分析深度；存在回退；清理完成；命中文件 0 个" in content
     assert payload["sections"]["new_capabilities"][0]["fallback_used"] is True
     assert payload["sections"]["new_capabilities"][0]["cleanup_completed"] is True
     assert payload["sections"]["new_capabilities"][0]["matched_files"] == []
     assert payload["sections"]["new_capabilities"][0]["evidence_snippets"] == []
+    assert payload["capability_cards"][0]["analysis"]["depth_label"] == "_未提供_"
+    assert payload["capability_cards"][0]["evidence_preview"]["matched_files_total"] == 0
