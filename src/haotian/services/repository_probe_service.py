@@ -177,27 +177,27 @@ class RepositoryProbeService:
         file_name = path.name.lower()
         keywords: list[str] = []
         group = ""
-        in_skill_package_context = self._is_skill_package_context(relative)
+        suppress_basename_hits = self._should_suppress_basename_hits(relative)
 
-        if len(lower_parts) >= 2 and lower_parts[0] == "docs" and file_name.endswith(".md"):
+        if self._path_contains_component(lower_parts, "docs") and file_name.endswith(".md"):
             keywords.extend(["docs/**/*.md", "*.md"])
             group = "docs"
-        elif len(lower_parts) >= 2 and lower_parts[0] == "agents" and file_name.endswith(".md"):
+        elif self._path_contains_component(lower_parts, "agents") and file_name.endswith(".md"):
             keywords.extend(["agents/**/*.md", "*.md"])
             group = "agents"
-        elif len(lower_parts) >= 2 and lower_parts[0] == "commands" and file_name.endswith(".md"):
+        elif self._path_contains_component(lower_parts, "commands") and file_name.endswith(".md"):
             keywords.extend(["commands/**/*.md", "*.md"])
             group = "commands"
-        elif len(lower_parts) >= 2 and lower_parts[0] == "references" and file_name.endswith(".md"):
+        elif self._path_contains_component(lower_parts, "references") and file_name.endswith(".md"):
             keywords.extend(["references/**/*.md", "*.md"])
             group = "references"
-        elif len(lower_parts) >= 2 and lower_parts[0] == "scripts" and file_name.endswith(".py"):
+        elif self._path_contains_component(lower_parts, "scripts") and file_name.endswith(".py"):
             keywords.extend(["scripts/**/*.py", "*.py"])
             group = "scripts"
-        elif len(lower_parts) >= 2 and lower_parts[0] == "skills" and file_name.endswith(".md"):
+        elif self._path_contains_component(lower_parts, "skills") and file_name.endswith(".md"):
             keywords.extend(["skills/**/*.md", "skill*", "*.md"])
             group = "skills"
-        elif len(lower_parts) >= 2 and lower_parts[0] == "prompts" and file_name.endswith(".md"):
+        elif self._path_contains_component(lower_parts, "prompts") and file_name.endswith(".md"):
             keywords.extend(["prompts/**/*.md", "*.md"])
             group = "prompts"
 
@@ -205,8 +205,8 @@ class RepositoryProbeService:
             keywords.append("skill*")
             group = group or "skills"
 
-        entrypoint_hits = [] if in_skill_package_context else self._match_entrypoint_keywords(file_name)
-        orchestration_hits = [] if in_skill_package_context else self._match_orchestration_keywords(file_name)
+        entrypoint_hits = [] if suppress_basename_hits else self._match_entrypoint_keywords(file_name)
+        orchestration_hits = [] if suppress_basename_hits else self._match_orchestration_keywords(file_name)
         if entrypoint_hits:
             keywords.extend(entrypoint_hits)
             group = group or "entrypoint"
@@ -226,8 +226,10 @@ class RepositoryProbeService:
             return (0, 0, file_name.lower())
         if lower_name.startswith("readme"):
             return (0, 1, file_name.lower())
-        if lower_name in {"skill.md", "agents.md", "codex.md"}:
+        if lower_name == "skill.md":
             return (0, 0, f"root-manifest:{file_name.lower()}")
+        if lower_name in {"agents.md", "codex.md"}:
+            return (2, 0, file_name.lower())
         if lower_name.endswith(".md"):
             return (2, 0, file_name.lower())
         if file_name == "package.json":
@@ -305,7 +307,7 @@ class RepositoryProbeService:
 
         if keyword_set.intersection({"README*", "*.md", "docs/**/*.md", "agents/**/*.md", "commands/**/*.md", "references/**/*.md", "skills/**/*.md", "prompts/**/*.md", "skill*", "SKILL.md", "AGENTS.md", "codex.md"}):
             signals.append("documentation-first")
-        if keyword_set.intersection({"skill*", "skills/**/*.md", "SKILL.md", "AGENTS.md", "codex.md"}):
+        if keyword_set.intersection({"skill*", "SKILL.md"}):
             signals.append("codex-skill-package")
             signals.append("skill-ecosystem")
         if keyword_set.intersection({"skill*", "skills/**/*.md"}):
@@ -363,8 +365,10 @@ class RepositoryProbeService:
     def _why_it_matters(self, match: _ProbeMatch) -> str:
         if "skill*" in match.keywords:
             return "Shows the repository is organized around a skill contract."
-        if "SKILL.md" in match.keywords or "AGENTS.md" in match.keywords or "codex.md" in match.keywords:
-            return "Shows a root-level skill ecosystem manifest."
+        if "SKILL.md" in match.keywords:
+            return "Shows a root-level skill manifest."
+        if "AGENTS.md" in match.keywords or "codex.md" in match.keywords:
+            return "Shows supporting repository guidance."
         if "docs/**/*.md" in match.keywords or "agents/**/*.md" in match.keywords or "commands/**/*.md" in match.keywords or "references/**/*.md" in match.keywords or "skills/**/*.md" in match.keywords or "prompts/**/*.md" in match.keywords or "scripts/**/*.py" in match.keywords:
             return "Documents operating guidance that often explains the real repository boundaries."
         if "main*" in match.keywords or "app*" in match.keywords or "server*" in match.keywords or "cli*" in match.keywords:
@@ -421,6 +425,10 @@ class RepositoryProbeService:
         return deduped
 
     @staticmethod
-    def _is_skill_package_context(relative_path: Path) -> bool:
+    def _path_contains_component(parts: tuple[str, ...], component: str) -> bool:
+        return component in parts
+
+    @staticmethod
+    def _should_suppress_basename_hits(relative_path: Path) -> bool:
         parts = tuple(part.lower() for part in relative_path.parts)
-        return len(parts) >= 2 and parts[0] == "skills"
+        return any(part == "skills" for part in parts) and relative_path.suffix.lower() == ".md"

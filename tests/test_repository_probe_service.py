@@ -62,15 +62,49 @@ def test_probe_prioritizes_full_skill_path_matrix(tmp_path) -> None:
     assert "plugin-ecosystem" in result.architecture_signals
 
 
-def test_probe_does_not_treat_nested_skill_package_names_as_entrypoints(tmp_path) -> None:
+def test_probe_preserves_basename_signals_inside_skill_directories(tmp_path) -> None:
     repo = tmp_path / "repo"
     write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
+    write_repo_file(repo, "skills/app-store-optimization/main.py", "def main() -> None:\n    pass\n")
+    write_repo_file(repo, "skills/app-store-optimization/workflow.py", "def run_workflow() -> None:\n    pass\n")
     write_repo_file(repo, "skills/app-store-optimization/app.py", "print('skill package')\n")
+    write_repo_file(repo, "skills/app-store-optimization/scripts/sync.py", "print('sync')\n")
+
+    result = RepositoryProbeService(max_files=8, max_file_bytes=256).probe(repo)
+
+    assert "main*" in result.matched_keywords
+    assert "workflow*" in result.matched_keywords
+    assert "app*" in result.matched_keywords
+    assert "scripts/**/*.py" in result.matched_keywords
+    assert "entrypoint-driven" in result.architecture_signals
+    assert "workflow-orchestration" in result.architecture_signals
+    assert "plugin-ecosystem" in result.architecture_signals
+
+
+def test_probe_does_not_treat_skill_package_directory_name_as_entrypoint(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
 
     result = RepositoryProbeService(max_files=8, max_file_bytes=256).probe(repo)
 
     assert "app*" not in result.matched_keywords
     assert "entrypoint-driven" not in result.architecture_signals
+
+
+def test_probe_does_not_promote_root_agent_docs_to_skill_package_without_manifest(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "AGENTS.md", "# Root agents")
+    write_repo_file(repo, "codex.md", "# Root codex")
+    write_repo_file(repo, "main.py", "def main() -> None:\n    pass\n")
+    write_repo_file(repo, "workflow.py", "def run_workflow() -> None:\n    pass\n")
+
+    result = RepositoryProbeService(max_files=2, max_file_bytes=256).probe(repo)
+
+    assert result.matched_files == ("main.py", "workflow.py")
+    assert "AGENTS.md" not in result.matched_files
+    assert "codex.md" not in result.matched_files
+    assert "codex-skill-package" not in result.architecture_signals
+    assert "skill-ecosystem" not in result.architecture_signals
 
 
 def test_probe_prioritizes_skill_and_markdown_files(tmp_path) -> None:
