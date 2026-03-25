@@ -24,6 +24,55 @@ def write_repo_file(root: Path, relative_path: str, content: str) -> Path:
     return path
 
 
+def test_probe_prioritizes_full_skill_path_matrix(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "SKILL.md", "# Root skill")
+    write_repo_file(repo, "AGENTS.md", "# Root agents")
+    write_repo_file(repo, "codex.md", "# Root codex")
+    write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
+    write_repo_file(repo, "skills/app-store-optimization/AGENTS.md", "# Nested agents")
+    write_repo_file(repo, "skills/app-store-optimization/codex.md", "# Nested codex")
+    write_repo_file(repo, "agents/planner.md", "# Agent guide")
+    write_repo_file(repo, "commands/refresh.md", "# Command guide")
+    write_repo_file(repo, "references/glossary.md", "# Reference guide")
+    write_repo_file(repo, "scripts/sync.py", "print('sync')\n")
+
+    result = RepositoryProbeService(max_files=12, max_file_bytes=256).probe(repo)
+
+    assert "SKILL.md" in result.matched_files
+    assert "AGENTS.md" in result.matched_files
+    assert "codex.md" in result.matched_files
+    assert "skills/app-store-optimization/SKILL.md" in result.matched_files
+    assert "skills/app-store-optimization/AGENTS.md" in result.matched_files
+    assert "skills/app-store-optimization/codex.md" in result.matched_files
+    assert "agents/planner.md" in result.matched_files
+    assert "commands/refresh.md" in result.matched_files
+    assert "references/glossary.md" in result.matched_files
+    assert "scripts/sync.py" in result.matched_files
+    assert "SKILL.md" in result.matched_keywords
+    assert "AGENTS.md" in result.matched_keywords
+    assert "codex.md" in result.matched_keywords
+    assert "skills/**/*.md" in result.matched_keywords
+    assert "agents/**/*.md" in result.matched_keywords
+    assert "commands/**/*.md" in result.matched_keywords
+    assert "references/**/*.md" in result.matched_keywords
+    assert "scripts/**/*.py" in result.matched_keywords
+    assert "codex-skill-package" in result.architecture_signals
+    assert "skill-ecosystem" in result.architecture_signals
+    assert "plugin-ecosystem" in result.architecture_signals
+
+
+def test_probe_does_not_treat_nested_skill_package_names_as_entrypoints(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
+    write_repo_file(repo, "skills/app-store-optimization/app.py", "print('skill package')\n")
+
+    result = RepositoryProbeService(max_files=8, max_file_bytes=256).probe(repo)
+
+    assert "app*" not in result.matched_keywords
+    assert "entrypoint-driven" not in result.architecture_signals
+
+
 def test_probe_prioritizes_skill_and_markdown_files(tmp_path) -> None:
     repo = copy_fixture_repo("skill-heavy", tmp_path)
 

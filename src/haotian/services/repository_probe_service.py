@@ -44,6 +44,9 @@ class RepositoryProbeService:
     _FIRST_PASS_PATTERNS: tuple[tuple[str, str], ...] = (
         ("skill*", "skill"),
         ("README*", "readme"),
+        ("SKILL.md", "skill-manifest"),
+        ("AGENTS.md", "skill-manifest"),
+        ("codex.md", "skill-manifest"),
         ("*.md", "markdown"),
         ("package.json", "package.json"),
         ("pyproject.toml", "pyproject.toml"),
@@ -53,6 +56,9 @@ class RepositoryProbeService:
     _SECOND_PASS_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("docs", ("docs/**/*.md", "*.md")),
         ("agents", ("agents/**/*.md", "*.md")),
+        ("commands", ("commands/**/*.md", "*.md")),
+        ("references", ("references/**/*.md", "*.md")),
+        ("scripts", ("scripts/**/*.py", "*.py")),
         ("skills", ("skills/**/*.md", "skill*", "*.md")),
         ("prompts", ("prompts/**/*.md", "*.md")),
         ("entrypoint", ("main*", "app*", "server*", "cli*")),
@@ -118,7 +124,7 @@ class RepositoryProbeService:
         seen_paths: set[str] = set()
 
         for child in sorted((path for path in root.iterdir() if path.is_file()), key=lambda path: path.name.lower()):
-            keywords = self._first_pass_keywords(child.name)
+            keywords = self._first_pass_keywords(child, root)
             if not keywords:
                 continue
             relative_path = child.relative_to(root).as_posix()
@@ -137,9 +143,17 @@ class RepositoryProbeService:
 
         return sorted(matches, key=lambda match: match.sort_rank)
 
-    def _first_pass_keywords(self, file_name: str) -> list[str]:
+    def _first_pass_keywords(self, path: Path, root: Path) -> list[str]:
         keywords: list[str] = []
+        file_name = path.name
         lower_name = file_name.lower()
+        relative = path.relative_to(root)
+        if len(relative.parts) == 1 and lower_name == "skill.md":
+            keywords.append("SKILL.md")
+        if len(relative.parts) == 1 and lower_name == "agents.md":
+            keywords.append("AGENTS.md")
+        if len(relative.parts) == 1 and lower_name == "codex.md":
+            keywords.append("codex.md")
         if lower_name.startswith("skill"):
             keywords.append("skill*")
         if lower_name.startswith("readme"):
@@ -163,6 +177,7 @@ class RepositoryProbeService:
         file_name = path.name.lower()
         keywords: list[str] = []
         group = ""
+        in_skill_package_context = self._is_skill_package_context(relative)
 
         if len(lower_parts) >= 2 and lower_parts[0] == "docs" and file_name.endswith(".md"):
             keywords.extend(["docs/**/*.md", "*.md"])
@@ -170,6 +185,15 @@ class RepositoryProbeService:
         elif len(lower_parts) >= 2 and lower_parts[0] == "agents" and file_name.endswith(".md"):
             keywords.extend(["agents/**/*.md", "*.md"])
             group = "agents"
+        elif len(lower_parts) >= 2 and lower_parts[0] == "commands" and file_name.endswith(".md"):
+            keywords.extend(["commands/**/*.md", "*.md"])
+            group = "commands"
+        elif len(lower_parts) >= 2 and lower_parts[0] == "references" and file_name.endswith(".md"):
+            keywords.extend(["references/**/*.md", "*.md"])
+            group = "references"
+        elif len(lower_parts) >= 2 and lower_parts[0] == "scripts" and file_name.endswith(".py"):
+            keywords.extend(["scripts/**/*.py", "*.py"])
+            group = "scripts"
         elif len(lower_parts) >= 2 and lower_parts[0] == "skills" and file_name.endswith(".md"):
             keywords.extend(["skills/**/*.md", "skill*", "*.md"])
             group = "skills"
@@ -181,8 +205,8 @@ class RepositoryProbeService:
             keywords.append("skill*")
             group = group or "skills"
 
-        entrypoint_hits = self._match_entrypoint_keywords(file_name)
-        orchestration_hits = self._match_orchestration_keywords(file_name)
+        entrypoint_hits = [] if in_skill_package_context else self._match_entrypoint_keywords(file_name)
+        orchestration_hits = [] if in_skill_package_context else self._match_orchestration_keywords(file_name)
         if entrypoint_hits:
             keywords.extend(entrypoint_hits)
             group = group or "entrypoint"
@@ -202,6 +226,8 @@ class RepositoryProbeService:
             return (0, 0, file_name.lower())
         if lower_name.startswith("readme"):
             return (0, 1, file_name.lower())
+        if lower_name in {"skill.md", "agents.md", "codex.md"}:
+            return (0, 0, f"root-manifest:{file_name.lower()}")
         if lower_name.endswith(".md"):
             return (2, 0, file_name.lower())
         if file_name == "package.json":
@@ -220,9 +246,12 @@ class RepositoryProbeService:
             "orchestration": 1,
             "docs": 2,
             "agents": 3,
-            "skills": 4,
-            "prompts": 5,
-            "markdown": 6,
+            "commands": 4,
+            "references": 5,
+            "scripts": 6,
+            "skills": 7,
+            "prompts": 8,
+            "markdown": 9,
         }
         return (1, group_order.get(group, 99), relative_path)
 
@@ -274,14 +303,19 @@ class RepositoryProbeService:
         matched_paths = [match.relative_path.lower() for match in matches]
         signals: list[str] = []
 
-        if keyword_set.intersection({"README*", "*.md", "docs/**/*.md", "agents/**/*.md", "skills/**/*.md", "prompts/**/*.md", "skill*"}):
+        if keyword_set.intersection({"README*", "*.md", "docs/**/*.md", "agents/**/*.md", "commands/**/*.md", "references/**/*.md", "skills/**/*.md", "prompts/**/*.md", "skill*", "SKILL.md", "AGENTS.md", "codex.md"}):
             signals.append("documentation-first")
+        if keyword_set.intersection({"skill*", "skills/**/*.md", "SKILL.md", "AGENTS.md", "codex.md"}):
+            signals.append("codex-skill-package")
+            signals.append("skill-ecosystem")
         if keyword_set.intersection({"skill*", "skills/**/*.md"}):
             signals.append("skill-centric")
         if keyword_set.intersection({"main*", "app*", "server*", "cli*", "package.json", "pyproject.toml", "requirements.txt", "Dockerfile"}):
             signals.append("entrypoint-driven")
         if keyword_set.intersection({"agent*", "workflow*", "orchestr*"}):
             signals.append("workflow-orchestration")
+        if keyword_set.intersection({"agents/**/*.md", "commands/**/*.md", "references/**/*.md", "scripts/**/*.py"}):
+            signals.append("plugin-ecosystem")
         if keyword_set.intersection({"browser*"}):
             signals.append("browser-automation")
         if keyword_set.intersection({"rag*", "retriev*"}):
@@ -329,7 +363,9 @@ class RepositoryProbeService:
     def _why_it_matters(self, match: _ProbeMatch) -> str:
         if "skill*" in match.keywords:
             return "Shows the repository is organized around a skill contract."
-        if "docs/**/*.md" in match.keywords or "agents/**/*.md" in match.keywords or "skills/**/*.md" in match.keywords or "prompts/**/*.md" in match.keywords:
+        if "SKILL.md" in match.keywords or "AGENTS.md" in match.keywords or "codex.md" in match.keywords:
+            return "Shows a root-level skill ecosystem manifest."
+        if "docs/**/*.md" in match.keywords or "agents/**/*.md" in match.keywords or "commands/**/*.md" in match.keywords or "references/**/*.md" in match.keywords or "skills/**/*.md" in match.keywords or "prompts/**/*.md" in match.keywords or "scripts/**/*.py" in match.keywords:
             return "Documents operating guidance that often explains the real repository boundaries."
         if "main*" in match.keywords or "app*" in match.keywords or "server*" in match.keywords or "cli*" in match.keywords:
             return "Likely an executable entrypoint for the project."
@@ -383,3 +419,8 @@ class RepositoryProbeService:
             seen.add(value)
             deduped.append(value)
         return deduped
+
+    @staticmethod
+    def _is_skill_package_context(relative_path: Path) -> bool:
+        parts = tuple(part.lower() for part in relative_path.parts)
+        return len(parts) >= 2 and parts[0] == "skills"
