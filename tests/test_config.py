@@ -27,7 +27,7 @@ def test_settings_default_to_local_run_artifact_paths(monkeypatch) -> None:
     assert settings.run_dir == Path("data/runs")
 
 
-def test_settings_support_codex_skill_roots_and_audit_script(monkeypatch, tmp_path) -> None:
+def test_settings_support_semicolon_separated_codex_skill_roots_and_audit_script(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CODEX_SKILL_ROOTS", f"{tmp_path / 'skills-a'};{tmp_path / 'skills-b'}")
     monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", str(tmp_path / "managed"))
     monkeypatch.setenv("SKILL_AUDIT_SCRIPT", str(tmp_path / "audit_skill.py"))
