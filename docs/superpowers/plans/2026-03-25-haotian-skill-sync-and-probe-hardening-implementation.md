@@ -130,12 +130,14 @@ def test_report_payload_includes_taxonomy_gap_summary(tmp_path):
 
     assert payload["taxonomy_gap_summary"]["candidate_count"] == 2
     assert payload["taxonomy_gap_candidates"][0]["display_name"] == "内容生成 / 营销自动化"
+    assert payload["executive_summary"]["taxonomy_gap_count"] == 2
 
 
 def test_markdown_renders_taxonomy_gap_section(tmp_path):
     markdown = service._render_markdown(date(2026, 3, 25), payload)
     assert "## Taxonomy Gap 候选" in markdown
     assert "内容生成 / 营销自动化" in markdown
+    assert "taxonomy gap 2 类" in markdown
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -150,6 +152,10 @@ Expected: FAIL because the report payload and Markdown do not expose gap data ye
 "taxonomy_gap_summary": {
     "candidate_count": len(taxonomy_gap_candidates),
     "repo_count": sum(candidate["repo_count"] for candidate in taxonomy_gap_candidates),
+},
+"executive_summary": {
+    ...,
+    "taxonomy_gap_count": len(taxonomy_gap_candidates),
 },
 "taxonomy_gap_candidates": taxonomy_gap_candidates,
 ```
@@ -189,20 +195,37 @@ git -C E:\Haotian commit -m "feat: add taxonomy gap summaries to reports"
 - Modify: `E:/Haotian/src/haotian/services/repository_analysis_service.py`
 - Modify: `E:/Haotian/tests/test_repository_probe_service.py`
 
-- [ ] **Step 1: Write failing probe tests for root skill files and misclassification guard**
+- [ ] **Step 1: Write failing probe tests for the full skill-path matrix and misclassification guard**
 
 ```python
 def test_probe_prioritizes_root_and_nested_skill_files(tmp_path):
     repo = tmp_path / "repo"
     (repo / "SKILL.md").write_text("# Root skill", encoding="utf-8")
+    (repo / "AGENTS.md").write_text("# Root agents", encoding="utf-8")
+    (repo / "codex.md").write_text("# Root codex", encoding="utf-8")
     (repo / "skills" / "seo-audit" / "SKILL.md").parent.mkdir(parents=True)
     (repo / "skills" / "seo-audit" / "SKILL.md").write_text("# Nested skill", encoding="utf-8")
+    (repo / "skills" / "seo-audit" / "AGENTS.md").write_text("# Nested agents", encoding="utf-8")
+    (repo / "skills" / "seo-audit" / "codex.md").write_text("# Nested codex", encoding="utf-8")
+    (repo / "agents" / "planner.md").parent.mkdir(parents=True)
+    (repo / "agents" / "planner.md").write_text("# Agent guide", encoding="utf-8")
+    (repo / "commands" / "refresh.md").parent.mkdir(parents=True)
+    (repo / "commands" / "refresh.md").write_text("# Command guide", encoding="utf-8")
+    (repo / "references" / "glossary.md").parent.mkdir(parents=True)
+    (repo / "references" / "glossary.md").write_text("# Reference guide", encoding="utf-8")
+    (repo / "scripts" / "sync.py").parent.mkdir(parents=True)
+    (repo / "scripts" / "sync.py").write_text("print('sync')", encoding="utf-8")
 
     result = RepositoryProbeService(max_files=8, max_file_bytes=256).probe(repo)
 
     assert "SKILL.md" in result.matched_files
+    assert "AGENTS.md" in result.matched_files
+    assert "codex.md" in result.matched_files
     assert "skills/seo-audit/SKILL.md" in result.matched_files
+    assert "skills/seo-audit/AGENTS.md" in result.matched_files
+    assert "skills/seo-audit/codex.md" in result.matched_files
     assert "codex-skill-package" in result.architecture_signals
+    assert "plugin-ecosystem" in result.architecture_signals
 
 
 def test_probe_does_not_treat_skill_name_as_entrypoint(tmp_path):
@@ -241,6 +264,8 @@ if self._is_skill_package_context(path, root):
 if any(keyword in keyword_set for keyword in {"skill-package", "skills/**/*.SKILL.md"}):
     signals.append("codex-skill-package")
     signals.append("skill-ecosystem")
+if any(keyword in keyword_set for keyword in {"agents/**/*.md", "commands/**/*.md", "references/**/*.md", "scripts/**/*.py"}):
+    signals.append("plugin-ecosystem")
 ```
 
 - [ ] **Step 5: Re-run the probe tests**
@@ -391,9 +416,11 @@ git -C E:\Haotian commit -m "feat: add codex skill inventory and audit services"
 - Modify: `E:/Haotian/src/haotian/services/classification_artifact_service.py`
 - Modify: `E:/Haotian/src/haotian/services/orchestration_service.py`
 - Modify: `E:/Haotian/src/haotian/runner.py`
+- Modify: `E:/Haotian/src/haotian/services/report_service.py`
 - Create: `E:/Haotian/tests/test_skill_sync_service.py`
 - Modify: `E:/Haotian/tests/test_orchestration_service.py`
 - Modify: `E:/Haotian/tests/test_runner.py`
+- Modify: `E:/Haotian/tests/test_report_service.py`
 
 - [ ] **Step 1: Write failing skill sync tests**
 
@@ -415,6 +442,14 @@ def test_skill_sync_discards_non_integrable_candidate(tmp_path):
 
 def test_skill_sync_blocks_failed_audit(tmp_path):
     assert result.actions[0]["action"] == "blocked_audit_failure"
+
+
+def test_skill_sync_blocks_ambiguous_match(tmp_path):
+    assert result.actions[0]["action"] == "blocked_ambiguous_match"
+
+
+def test_skill_sync_rejects_symlink_escape_before_install(tmp_path):
+    assert result.actions[0]["action"] == "blocked_audit_failure"
 ```
 
 - [ ] **Step 2: Run the new sync tests to verify they fail**
@@ -435,22 +470,31 @@ def match_candidate(self, candidate, inventory):
     )
 ```
 
-- [ ] **Step 4: Implement atomic staging, install, and rollback**
+- [ ] **Step 4: Implement ambiguity blocking, resolved-path containment, and atomic staging**
 
 ```python
+if self._is_ambiguous(matches):
+    return SkillSyncAction(action="blocked_ambiguous_match", ...)
+
+if not self._is_within_managed_root(staging_dir) or self._is_alias_escape(target_dir):
+    return SkillSyncAction(action="blocked_audit_failure", ...)
+
 staging_dir = managed_root.parent / f".haotian-stage-{candidate.slug}"
 target_dir = managed_root / candidate.slug
 ...
 staging_dir.replace(target_dir)
 ```
 
-- [ ] **Step 5: Wire sync results into finalize artifacts and runner summary**
+- [ ] **Step 5: Wire sync results into artifacts, report JSON, and runner summary**
 
 ```python
 result.skill_sync_report_path = self.artifact_service.write_json_artifact(
     path=self.artifact_service.skill_sync_report_path(target_date.isoformat()),
     payload=sync_payload,
 )
+
+payload["skill_sync_summary"] = sync_payload["summary"]
+payload["skill_sync_actions"] = sync_payload["actions"]
 ```
 
 - [ ] **Step 6: Re-run the sync and orchestration tests**
@@ -462,7 +506,7 @@ Expected: PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C E:\Haotian add src/haotian/services/skill_sync_service.py src/haotian/services/classification_artifact_service.py src/haotian/services/orchestration_service.py src/haotian/runner.py tests/test_skill_sync_service.py tests/test_orchestration_service.py tests/test_runner.py
+git -C E:\Haotian add src/haotian/services/skill_sync_service.py src/haotian/services/classification_artifact_service.py src/haotian/services/orchestration_service.py src/haotian/services/report_service.py src/haotian/runner.py tests/test_skill_sync_service.py tests/test_orchestration_service.py tests/test_report_service.py tests/test_runner.py
 git -C E:\Haotian commit -m "feat: add audited codex skill sync"
 ```
 
@@ -484,9 +528,9 @@ def test_readme_mentions_skill_sync_report():
 
 - [ ] **Step 2: Run the focused checks to verify the docs need updates**
 
-Run: `E:\Python\python.exe -m pytest -q E:\Haotian\tests\test_config.py E:\Haotian\tests\test_runner.py -q`
+Run: `E:\Python\python.exe -m pytest -q E:\Haotian\tests\test_config.py E:\Haotian\tests\test_report_service.py E:\Haotian\tests\test_runner.py -q`
 
-Expected: PASS or FAIL depending on prior tasks; if no doc assertions are committed as tests, use this step to manually confirm missing references before editing docs.
+Expected: PASS, and the new configuration/report fields are stable before editing docs.
 
 - [ ] **Step 3: Update docs and examples**
 
@@ -510,6 +554,14 @@ Expected:
 - `status` is `completed`
 - `E:\Haotian\data\runs\2026-03-25\skill-sync-report.json` exists
 - `E:\Haotian\data\reports\2026-03-25.md` contains a `Taxonomy Gap 候选` section
+- `E:\Haotian\data\reports\2026-03-25.json` contains `taxonomy_gap_summary`, `taxonomy_gap_candidates`, `skill_sync_summary`, and `skill_sync_actions`
+- every action inside `skill_sync_actions` is one of:
+  - `aligned_existing`
+  - `installed_new`
+  - `discarded_non_integrable`
+  - `blocked_audit_failure`
+  - `blocked_ambiguous_match`
+  - `rolled_back_install_failure`
 - skill-heavy repositories surface skill-package evidence instead of generic entrypoint bias
 
 - [ ] **Step 6: Commit**
@@ -526,3 +578,6 @@ git -C E:\Haotian commit -m "docs: document skill sync and probe hardening"
 - [ ] Verify `E:\Haotian\data\runs\2026-03-25\skill-sync-report.json`
 - [ ] Verify `E:\Haotian\data\reports\2026-03-25.md`
 - [ ] Verify `E:\Haotian\data\reports\2026-03-25.json`
+- [ ] Verify `taxonomy_gap_summary` and `taxonomy_gap_candidates` exist in the JSON report
+- [ ] Verify `skill_sync_summary` and `skill_sync_actions` exist in the JSON report
+- [ ] Verify every `skill_sync_actions[*].action` is inside the closed enum
