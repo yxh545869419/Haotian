@@ -280,6 +280,7 @@ class ReportService:
         executive_summary = payload["executive_summary"]
         highlights = payload["highlights"]
         capability_cards = payload["capability_cards"]
+        taxonomy_gap_candidates = payload["taxonomy_gap_candidates"]
         artifact_links = payload["artifact_links"]
         repo_changes = executive_summary["repo_changes"]
         lines = [
@@ -295,7 +296,8 @@ class ReportService:
                 f"新增 {summary['new_capabilities']}｜"
                 f"增强候选 {summary['enhancement_candidates']}｜"
                 f"已覆盖 {summary['covered']}｜"
-                f"风险 {summary['risks']}"
+                f"风险 {summary['risks']}｜"
+                f"taxonomy gap {executive_summary['taxonomy_gap_count']} 类"
             ),
             (
                 "仓库变化："
@@ -334,6 +336,17 @@ class ReportService:
                 )
         else:
             lines.extend(["_今日未识别到能力项。_", ""])
+        lines.extend(["", "## Taxonomy Gap 候选", ""])
+        if taxonomy_gap_candidates:
+            for candidate in taxonomy_gap_candidates:
+                repo_text = self._render_repo_list(tuple(candidate["repo_full_names"]))
+                lines.append(
+                    f"- `{candidate['display_name']}`：涉及 {candidate['repo_count']} 个 repo，代表仓库 {repo_text}。"
+                )
+                lines.append(f"  原因：{candidate['reason']}")
+        else:
+            lines.append("_今日未识别到 taxonomy gap 候选。_")
+        lines.append("")
         lines.extend(
             [
                 "## 产物路径",
@@ -363,6 +376,11 @@ class ReportService:
         }
         cards = [self._build_capability_card(item) for item in sections["summary"]]
         highlight_items = sorted(sections["summary"], key=self._highlight_sort_key)[:5]
+        taxonomy_gap_candidates = self._load_taxonomy_gap_candidates(target_date)
+        taxonomy_gap_summary = {
+            "candidate_count": len(taxonomy_gap_candidates),
+            "repo_count": sum(candidate["repo_count"] for candidate in taxonomy_gap_candidates),
+        }
         return {
             "report_format": "management-summary-v1",
             "report_date": target_date.isoformat(),
@@ -374,8 +392,9 @@ class ReportService:
                 if key != "summary"
             },
             "executive_summary": {
-                "headline": self._build_headline(summary),
+                "headline": self._build_headline(summary, taxonomy_gap_summary["candidate_count"]),
                 "counts": summary,
+                "taxonomy_gap_count": taxonomy_gap_summary["candidate_count"],
                 "repo_changes": {
                     "today": len(repo_snapshot["today"]),
                     "new": len(repo_snapshot["new"]),
@@ -384,11 +403,13 @@ class ReportService:
             },
             "highlights": [self._build_highlight_entry(item) for item in highlight_items],
             "capability_cards": cards,
+            "taxonomy_gap_summary": taxonomy_gap_summary,
+            "taxonomy_gap_candidates": taxonomy_gap_candidates,
             "artifact_links": self._build_artifact_links(target_date),
         }
 
     @staticmethod
-    def _build_headline(summary: dict[str, int]) -> str:
+    def _build_headline(summary: dict[str, int], taxonomy_gap_count: int = 0) -> str:
         manual_attention = (
             f"{summary['manual_attention']} 个需要人工关注"
             if summary["manual_attention"]
@@ -397,7 +418,8 @@ class ReportService:
         return (
             f"今日识别 {summary['total_capabilities']} 个能力，"
             f"{manual_attention}，"
-            f"重点跟进 {summary['enhancement_candidates']} 个增强候选。"
+            f"重点跟进 {summary['enhancement_candidates']} 个增强候选，"
+            f"taxonomy gap {taxonomy_gap_count} 类。"
         )
 
     def _build_capability_card(self, item: ReportItem) -> dict[str, object]:
@@ -463,6 +485,28 @@ class ReportService:
             "taxonomy_gap_candidates": str(run_base / "taxonomy-gap-candidates.json"),
         }
 
+    def _load_taxonomy_gap_candidates(self, target_date: date) -> list[dict[str, object]]:
+        path = self.run_dir / target_date.isoformat() / "taxonomy-gap-candidates.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        candidates = payload.get("candidates", [])
+        if not isinstance(candidates, list):
+            return []
+        normalized: list[dict[str, object]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            normalized.append(
+                {
+                    "candidate_id": str(candidate.get("candidate_id", "")),
+                    "display_name": str(candidate.get("display_name", "")),
+                    "reason": str(candidate.get("reason", "")),
+                    "repo_full_names": tuple(str(repo) for repo in candidate.get("repo_full_names", []) if repo),
+                    "repo_count": int(candidate.get("repo_count", 0)),
+                }
+            )
+        return normalized
     def _highlight_sort_key(self, item: ReportItem) -> tuple[int, int, float, str]:
         priority_order = {"high": 0, "medium": 1, "low": 2}
         status_order = {

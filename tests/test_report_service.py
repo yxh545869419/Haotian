@@ -124,6 +124,42 @@ def _insert_repo_analysis_snapshot(
     )
 
 
+def _write_taxonomy_gap_candidates(
+    run_dir,
+    *,
+    report_date: str,
+) -> None:
+    run_path = run_dir / report_date
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("taxonomy-gap-candidates.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": report_date,
+                "candidates": [
+                    {
+                        "candidate_id": "content_generation",
+                        "display_name": "内容生成 / 营销自动化",
+                        "reason": "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。",
+                        "repo_full_names": ["acme/money-printer"],
+                        "repo_count": 1,
+                    },
+                    {
+                        "candidate_id": "security_analysis",
+                        "display_name": "安全分析",
+                        "reason": "仓库主要面向漏洞、配置错误、密钥或 SBOM 扫描，当前 taxonomy 没有对应能力。",
+                        "repo_full_names": ["acme/security-scanner"],
+                        "repo_count": 1,
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     initialize_schema(database_url)
@@ -206,7 +242,7 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
 
     assert "# 每日能力管理摘要 - 2026-03-20" in content
     assert "## 总览" in content
-    assert "一句话结论：今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选。" in content
+    assert "一句话结论：今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选，taxonomy gap 0 类。" in content
     assert "统计：能力 1｜人工关注 0｜新增 0｜增强候选 1｜已覆盖 0｜风险 0" in content
     assert "仓库变化：今日 2 个｜新增 2 个｜移除 1 个" in content
     assert "## 今日重点" in content
@@ -227,7 +263,7 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert payload["report_format"] == "management-summary-v1"
     assert payload["report_date"] == "2026-03-20"
     assert payload["summary"]["total_capabilities"] == 1
-    assert payload["executive_summary"]["headline"] == "今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选。"
+    assert payload["executive_summary"]["headline"] == "今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选，taxonomy gap 0 类。"
     assert payload["highlights"][0]["status_label"] == "增强候选"
     assert payload["highlights"][0]["priority"] == "medium"
     assert payload["capability_cards"][0]["capability_id"] == "browser_automation"
@@ -247,6 +283,66 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert item["fallback_used"] is False
     assert item["cleanup_completed"] is True
     assert item["evidence_snippets"][0]["path"] == "README.md"
+
+
+def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": ("acme/money-printer", "acme/security-scanner"),
+        "previous": (),
+        "new": ("acme/money-printer", "acme/security-scanner"),
+        "dropped": (),
+    }
+    _write_taxonomy_gap_candidates(run_dir, report_date="2026-03-25")
+
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    assert payload["taxonomy_gap_summary"]["candidate_count"] == 2
+    assert payload["taxonomy_gap_candidates"][0]["display_name"] == "内容生成 / 营销自动化"
+    assert payload["executive_summary"]["taxonomy_gap_count"] == 2
+
+
+def test_markdown_renders_taxonomy_gap_section(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": ("acme/money-printer", "acme/security-scanner"),
+        "previous": (),
+        "new": ("acme/money-printer", "acme/security-scanner"),
+        "dropped": (),
+    }
+    _write_taxonomy_gap_candidates(run_dir, report_date="2026-03-25")
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    markdown = service._render_markdown(date(2026, 3, 25), payload)
+    assert "## Taxonomy Gap 候选" in markdown
+    assert "内容生成 / 营销自动化" in markdown
+    assert "taxonomy gap 2 类" in markdown
 
 
 def test_report_service_marks_fallback_analysis_in_markdown(tmp_path) -> None:
