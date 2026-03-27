@@ -145,7 +145,9 @@ data/
     └── YYYY-MM-DD/
         ├── classification-input.json
         ├── classification-output.json
+        ├── capability-audit.json
         ├── skill-sync-report.json
+        ├── taxonomy-gap-candidates.json
         └── run-summary.json
 ```
 

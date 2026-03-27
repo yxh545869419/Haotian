@@ -129,8 +129,14 @@ def test_get_settings_normalizes_relative_artifact_paths_against_load_cwd(monkey
 def test_docs_mention_skill_sync_report_and_skill_sync_configuration() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
     env_example = Path(".env.example").read_text(encoding="utf-8")
+    ops_doc = Path("docs/ops.md").read_text(encoding="utf-8")
+    architecture_doc = Path("docs/architecture.md").read_text(encoding="utf-8")
 
     assert "skill-sync-report.json" in readme
     assert "CODEX_SKILL_ROOTS" in env_example
     assert "CODEX_MANAGED_SKILL_ROOT" in env_example
     assert "SKILL_AUDIT_SCRIPT" in env_example
+    assert "CODEX_SKILL_ROOTS" in ops_doc
+    assert "可选" in ops_doc
+    assert "capability-audit.json" in architecture_doc
+    assert "taxonomy-gap-candidates.json" in architecture_doc

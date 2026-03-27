@@ -94,11 +94,12 @@ finalize 之后会额外输出：
 - `skill-sync-report.json`：本机 skill 对齐 / 新安装 / 审计阻断等动作明细，程序后续应优先读取 `skill_sync_summary` 和 `skill_sync_actions`
 - `taxonomy-gap-candidates.json`：当天未能落入现有 taxonomy 的仓库候选，用于后续扩充 taxonomy
 
-如果配置了下面 3 个环境变量，finalize 还会真正落地 skill sync：
+如果要真正安装新的 Haotian-managed skill，至少需要：
 
-- `CODEX_SKILL_ROOTS`
 - `CODEX_MANAGED_SKILL_ROOT`
 - `SKILL_AUDIT_SCRIPT`
+
+其中 `CODEX_SKILL_ROOTS` 可选；它主要用于扫描和对齐当前机器上已经安装的 skill，不配置时仍然可以把新的审计通过 skill 安装到 `CODEX_MANAGED_SKILL_ROOT`。
 
 ## 常用检查
 
