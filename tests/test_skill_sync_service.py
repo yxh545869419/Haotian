@@ -507,6 +507,42 @@ def test_skill_sync_does_not_align_managed_wrapper_with_missing_identity_metadat
     assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
 
 
+def test_skill_sync_does_not_align_managed_wrapper_with_malformed_wrapper_slug(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    inventory = {
+        "managed-wrapper": InstalledSkillRecord(
+            slug="managed-wrapper",
+            source_root=managed_root.resolve(),
+            skill_dir=(managed_root / "managed-wrapper"),
+            canonical_path=(managed_root / "managed-wrapper"),
+            display_name="Managed Wrapper",
+            description="Codex skill package for browser automation workflows.",
+            relative_path="managed-wrapper",
+            root_index=0,
+            managed=True,
+            aliases=("../browser-bot",),
+            managed_source_repo_full_name="other/repo",
+            managed_wrapper_slug="../browser-bot",
+            managed_relative_root=".",
+        )
+    }
+    inventory["managed-wrapper"].skill_dir.mkdir(parents=True, exist_ok=True)
+    inventory["managed-wrapper"].skill_dir.joinpath("SKILL.md").write_text("# Managed Wrapper\n", encoding="utf-8")
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[_candidate("browser-bot", display_name="Browser Bot", source_repo_full_name="other/repo")],
+        inventory=inventory,
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].matched_installed_slug is None
+    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
+
+
 def test_skill_sync_rejects_path_escape_before_install(tmp_path) -> None:
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Iterable
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import os
 
 from haotian.config import get_settings
@@ -80,7 +80,7 @@ class CodexSkillInventoryService:
                     managed=managed,
                     aliases=self._aliases(metadata, slug),
                     managed_source_repo_full_name=self._metadata_value(metadata, "source_repo_full_name"),
-                    managed_wrapper_slug=self._metadata_value(metadata, "slug"),
+                    managed_wrapper_slug=self._safe_wrapper_slug(self._metadata_value(metadata, "slug")),
                     managed_relative_root=self._metadata_value(metadata, "relative_root"),
                 )
 
@@ -168,7 +168,19 @@ class CodexSkillInventoryService:
     @staticmethod
     def _aliases(metadata: dict[str, object], slug: str) -> tuple[str, ...]:
         aliases: list[str] = []
-        wrapper_slug = CodexSkillInventoryService._metadata_value(metadata, "slug")
+        wrapper_slug = CodexSkillInventoryService._safe_wrapper_slug(CodexSkillInventoryService._metadata_value(metadata, "slug"))
         if wrapper_slug and wrapper_slug != slug:
             aliases.append(wrapper_slug)
         return tuple(aliases)
+
+    @staticmethod
+    def _safe_wrapper_slug(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        pure = PurePosixPath(normalized.replace("\\", "/"))
+        if pure.is_absolute() or len(pure.parts) != 1 or any(part in {"", ".", ".."} for part in pure.parts):
+            return None
+        return normalized

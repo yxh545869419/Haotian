@@ -387,10 +387,11 @@ class SkillSyncService:
     @staticmethod
     def _record_alias_tokens(record: InstalledSkillRecord) -> set[str]:
         tokens = set()
-        if record.managed_wrapper_slug:
+        if record.managed_wrapper_slug and SkillSyncService._is_valid_metadata_slug(record.managed_wrapper_slug):
             tokens.add(SkillSyncService._normalized_token(record.managed_wrapper_slug))
         for alias in record.aliases:
-            tokens.add(SkillSyncService._normalized_token(alias))
+            if SkillSyncService._is_valid_metadata_slug(alias):
+                tokens.add(SkillSyncService._normalized_token(alias))
         return {token for token in tokens if token}
 
     @staticmethod
@@ -404,6 +405,10 @@ class SkillSyncService:
     ) -> bool:
         if not record.managed:
             return True
+        if record.managed_wrapper_slug is not None and not SkillSyncService._is_valid_metadata_slug(record.managed_wrapper_slug):
+            return False
+        if any(not SkillSyncService._is_valid_metadata_slug(alias) for alias in record.aliases):
+            return False
         record_repo = SkillSyncService._canonical_repo_identity(record.managed_source_repo_full_name)
         candidate_repo = SkillSyncService._canonical_repo_identity(candidate.source_repo_full_name)
         if record_repo is None or candidate_repo is None or record_repo != candidate_repo:
@@ -510,6 +515,14 @@ class SkillSyncService:
         if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
             return None
         return pure.as_posix()
+
+    @staticmethod
+    def _is_valid_metadata_slug(value: str) -> bool:
+        normalized = value.strip()
+        if not normalized:
+            return False
+        pure = PurePosixPath(normalized.replace("\\", "/"))
+        return not pure.is_absolute() and len(pure.parts) == 1 and all(part not in {"", ".", ".."} for part in pure.parts)
 
     @staticmethod
     def _is_integrable(candidate: SkillSyncCandidate) -> bool:

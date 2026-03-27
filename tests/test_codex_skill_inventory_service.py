@@ -136,3 +136,25 @@ def test_codex_skill_inventory_reads_managed_wrapper_metadata(tmp_path) -> None:
     assert inventory["acme-browser-bot"].managed_wrapper_slug == "browser-bot"
     assert inventory["acme-browser-bot"].managed_source_repo_full_name == "acme/browser-bot"
     assert inventory["acme-browser-bot"].managed_relative_root == "."
+
+
+def test_codex_skill_inventory_ignores_invalid_managed_wrapper_slug(tmp_path) -> None:
+    managed = tmp_path / "managed"
+    _write_skill(
+        managed,
+        "acme-browser-bot",
+        description="Managed wrapper",
+        managed_wrapper={
+            "schema_version": 1,
+            "managed_by": "haotian",
+            "slug": "../browser-bot",
+            "display_name": "Browser Bot",
+            "source_repo_full_name": "acme/browser-bot",
+            "relative_root": ".",
+        },
+    )
+
+    inventory = CodexSkillInventoryService((managed,), managed_root=managed).scan()
+
+    assert inventory["acme-browser-bot"].managed_wrapper_slug is None
+    assert inventory["acme-browser-bot"].aliases == ()
