@@ -82,6 +82,7 @@ python start_haotian.py --date 2026-03-23
 - `data/reports/2026-03-23.md`
 - `data/reports/2026-03-23.json`
 - `data/runs/2026-03-23/capability-audit.json`
+- `data/runs/2026-03-23/skill-sync-report.json`
 - `data/runs/2026-03-23/taxonomy-gap-candidates.json`
 - `data/runs/2026-03-23/run-summary.json`
 
@@ -90,7 +91,14 @@ Markdown 报告现在是管理摘要，适合人快速阅读；JSON 报告是程
 finalize 之后会额外输出：
 
 - `capability-audit.json`：自动增强审计结果，包括自动提升项、仍有风险的增强候选，以及需要人工关注的内容
+- `skill-sync-report.json`：本机 skill 对齐 / 新安装 / 审计阻断等动作明细，程序后续应优先读取 `skill_sync_summary` 和 `skill_sync_actions`
 - `taxonomy-gap-candidates.json`：当天未能落入现有 taxonomy 的仓库候选，用于后续扩充 taxonomy
+
+如果配置了下面 3 个环境变量，finalize 还会真正落地 skill sync：
+
+- `CODEX_SKILL_ROOTS`
+- `CODEX_MANAGED_SKILL_ROOT`
+- `SKILL_AUDIT_SCRIPT`
 
 ## 常用检查
 

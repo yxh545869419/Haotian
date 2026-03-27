@@ -85,6 +85,7 @@ python start_haotian.py --date 2026-03-23
 - `data/runs/YYYY-MM-DD/classification-input.json`
 - `data/runs/YYYY-MM-DD/classification-output.json`
 - `data/runs/YYYY-MM-DD/capability-audit.json`
+- `data/runs/YYYY-MM-DD/skill-sync-report.json`
 - `data/runs/YYYY-MM-DD/taxonomy-gap-candidates.json`
 - `data/runs/YYYY-MM-DD/run-summary.json`
 - `data/reports/YYYY-MM-DD.md`
@@ -102,6 +103,9 @@ python start_haotian.py --date 2026-03-23
 - `MAX_DEEP_ANALYSIS_REPOS`：每个深度分析批次允许处理的仓库数量；程序会自动继续后续批次
 - `REPORT_DIR`：最终 Markdown / JSON 报告目录，默认 `./data/reports`
 - `RUN_DIR`：分阶段工件目录，默认 `./data/runs`
+- `CODEX_SKILL_ROOTS`：现有本机 Codex skill 根目录，多个路径用分号分隔
+- `CODEX_MANAGED_SKILL_ROOT`：Haotian 托管的新 skill 安装目录
+- `SKILL_AUDIT_SCRIPT`：`skill-audit-guard` 的 `audit_skill.py` 路径，用于安装前审计
 
 当前不需要这些旧配置：
 
@@ -173,10 +177,22 @@ finalize 阶段现在还会自动做两件事：
 - 审计增强候选：低风险、无人工关注、无 fallback 且证据完整的能力会自动提升；审计结果写入 `capability-audit.json`
 - 识别 taxonomy 缺口：当天没有落入任何现有 taxonomy 的仓库，会被整理成 `taxonomy-gap-candidates.json`，方便后续扩充 taxonomy
 
+另外还会执行一次确定性的 skill sync：
+
+- 先扫描 `CODEX_SKILL_ROOTS` 中已安装的本机 skill
+- 对可整合的 skill 候选生成 Haotian-managed wrapper，并在审计通过后安装到 `CODEX_MANAGED_SKILL_ROOT`
+- 所有动作会写入 `skill-sync-report.json`
+
 最终生成的 Markdown / JSON 报告现在分成两层：
 
 - Markdown 是给人看的管理摘要，重点展示一句话结论、今日重点、能力摘要卡片和产物路径
 - JSON 是给程序读取的标准结构，后续自动化应优先读取 `report_format`、`executive_summary`、`highlights`、`capability_cards` 和 `artifact_links`
+
+如果后续流程要读取 skill sync 结果，优先看：
+
+- `skill_sync_summary`
+- `skill_sync_actions`
+- `artifact_links.skill_sync_report`
 
 ## 文档
 
