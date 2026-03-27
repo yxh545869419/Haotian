@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import haotian.services.repository_workspace_service as repository_workspace_module
+from haotian.config import PROJECT_ROOT
 from haotian.config import get_settings
 from haotian.services.repository_workspace_service import ClonedWorkspace
 from haotian.services.repository_workspace_service import RepositoryWorkspaceService
@@ -100,6 +101,8 @@ def test_workspace_cleanup_deletes_cloned_directory(tmp_path) -> None:
     service.cleanup_repo(workspace)
 
     assert not workspace.path.exists()
+    assert not workspace.path.parent.exists()
+    assert not service.workspace_root.exists()
 
 
 def test_workspace_cleanup_retries_transient_permission_error_then_succeeds(tmp_path, monkeypatch) -> None:
@@ -190,13 +193,13 @@ def test_workspace_service_uses_cached_relative_tmp_repo_dir_after_later_cwd_cha
     get_settings.cache_clear()
     try:
         settings = get_settings()
-        assert settings.tmp_repo_dir == (first_cwd / "tmp-repos").resolve()
+        assert settings.tmp_repo_dir == (PROJECT_ROOT / "tmp-repos").resolve()
 
         monkeypatch.chdir(second_cwd)
         service = RepositoryWorkspaceService(run_label="2026-03-24")
 
-        assert service.base_dir == (first_cwd / "tmp-repos").resolve()
-        assert service.workspace_root == (first_cwd / "tmp-repos" / "2026-03-24").resolve()
+        assert service.base_dir == (PROJECT_ROOT / "tmp-repos").resolve()
+        assert service.workspace_root == (PROJECT_ROOT / "tmp-repos" / "2026-03-24").resolve()
     finally:
         get_settings.cache_clear()
 

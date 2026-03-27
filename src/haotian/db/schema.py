@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from collections.abc import Iterator
 
-from haotian.config import get_settings
+from haotian.config import PROJECT_ROOT, get_settings
 
 
 CAPABILITY_REGISTRY_STATUS_VALUES = (
@@ -176,7 +176,10 @@ def resolve_sqlite_path(database_url: str | None = None) -> Path:
     resolved_url = database_url or get_settings().database_url
     if not resolved_url.startswith("sqlite:///"):
         raise ValueError("Only sqlite:/// URLs are supported by the built-in schema helper.")
-    return Path(resolved_url.removeprefix("sqlite:///"))
+    raw_path = Path(resolved_url.removeprefix("sqlite:///"))
+    if not raw_path.is_absolute():
+        raw_path = PROJECT_ROOT / raw_path
+    return raw_path.resolve(strict=False)
 
 
 @contextmanager

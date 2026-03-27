@@ -1321,7 +1321,11 @@ def test_ingest_classification_output_writes_taxonomy_gap_candidates_for_unclass
 
     gap_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "taxonomy-gap-candidates.json").read_text(encoding="utf-8"))
     candidate_ids = {item["candidate_id"] for item in gap_payload["candidates"]}
+    display_names = {item["candidate_id"]: item["display_name"] for item in gap_payload["candidates"]}
 
     assert "content_generation" in candidate_ids
     assert "memory_context_management" in candidate_ids
     assert "security_analysis" in candidate_ids
+    assert display_names["content_generation"] == "Content Generation / Marketing Automation"
+    assert display_names["memory_context_management"] == "Memory & Context Management"
+    assert display_names["security_analysis"] == "Security Analysis"

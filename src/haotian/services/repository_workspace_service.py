@@ -49,6 +49,7 @@ class RepositoryWorkspaceService:
             raise ValueError("workspace path must match repo_full_name")
         self._ensure_within_workspace_root(expected_path)
         self._remove_directory_tree(expected_path)
+        self._prune_empty_workspace_ancestors(expected_path.parent)
 
     @staticmethod
     def _remove_readonly(func, path, exc_info) -> None:
@@ -81,6 +82,17 @@ class RepositoryWorkspaceService:
                 if attempt >= len(self._cleanup_retry_delays) or not target.exists():
                     raise
                 time.sleep(self._cleanup_retry_delays[attempt])
+
+    def _prune_empty_workspace_ancestors(self, start: Path) -> None:
+        current = start
+        while current != self.base_dir:
+            if not current.exists():
+                current = current.parent
+                continue
+            if any(current.iterdir()):
+                break
+            current.rmdir()
+            current = current.parent
 
     def _ensure_within_workspace_root(self, path: Path) -> None:
         workspace_root = self._resolved_workspace_root()

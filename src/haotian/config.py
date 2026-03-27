@@ -7,13 +7,15 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
     load_dotenv = None
 
 if load_dotenv is not None:
-    load_dotenv()
+    load_dotenv(dotenv_path=PROJECT_ROOT / ".env")
 
 
 class Settings(BaseModel):
@@ -101,6 +103,7 @@ def get_settings() -> Settings:
     """Return a cached settings instance for the current process."""
 
     settings = Settings.from_env()
+    settings.database_url = _resolve_database_url(settings.database_url)
     settings.tmp_repo_dir = _resolve_runtime_path(settings.tmp_repo_dir)
     settings.report_dir = _resolve_runtime_path(settings.report_dir)
     settings.run_dir = _resolve_runtime_path(settings.run_dir)
@@ -116,7 +119,15 @@ def get_settings() -> Settings:
 
 
 def _resolve_runtime_path(path: Path) -> Path:
-    base = Path.cwd()
+    base = PROJECT_ROOT
     if not path.is_absolute():
         path = base / path
     return path.resolve(strict=False)
+
+
+def _resolve_database_url(database_url: str) -> str:
+    if not database_url.startswith("sqlite:///"):
+        return database_url
+    raw_path = Path(database_url.removeprefix("sqlite:///"))
+    resolved = _resolve_runtime_path(raw_path)
+    return f"sqlite:///{resolved.as_posix()}"

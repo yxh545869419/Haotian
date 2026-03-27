@@ -141,7 +141,7 @@ def _write_taxonomy_gap_candidates(
                 "candidates": [
                     {
                         "candidate_id": "content_generation",
-                        "display_name": "内容生成 / 营销自动化",
+                        "display_name": "Content Generation / Marketing Automation",
                         "reason": "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。",
                         "repo_full_names": ["acme/money-printer"],
                         "repo_count": 1,
@@ -319,7 +319,7 @@ def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
     payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
 
     assert payload["taxonomy_gap_summary"]["candidate_count"] == 2
-    assert payload["taxonomy_gap_candidates"][0]["display_name"] == "内容生成 / 营销自动化"
+    assert payload["taxonomy_gap_candidates"][0]["display_name"] == "Content Generation / Marketing Automation"
     assert payload["executive_summary"]["taxonomy_gap_count"] == 2
 
 def test_report_payload_includes_skill_sync_summary_and_actions(tmp_path) -> None:
@@ -448,7 +448,7 @@ def test_report_payload_normalizes_taxonomy_gap_repo_count_from_repo_names(tmp_p
             "candidates": [
                 {
                     "candidate_id": "content_generation",
-                    "display_name": "内容生成 / 营销自动化",
+                    "display_name": "Content Generation / Marketing Automation",
                     "reason": "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。",
                     "repo_full_names": ["acme/money-printer", "acme/newsletter-bot"],
                     "repo_count": 999,
@@ -551,7 +551,7 @@ def test_markdown_renders_taxonomy_gap_section(tmp_path) -> None:
 
     markdown = service._render_markdown(date(2026, 3, 25), payload)
     assert "## Taxonomy Gap 候选" in markdown
-    assert "内容生成 / 营销自动化" in markdown
+    assert "Content Generation / Marketing Automation" in markdown
     assert "taxonomy gap 2 类" in markdown
 
 

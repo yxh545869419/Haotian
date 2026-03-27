@@ -949,31 +949,31 @@ class OrchestrationService:
         if any(token in blob for token in ("video", "youtube", "twitter", "tweet", "outreach", "affiliate", "content")):
             return {
                 "candidate_id": "content_generation",
-                "display_name": "内容生成 / 营销自动化",
+                "display_name": "Content Generation / Marketing Automation",
                 "reason": "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。",
             }
         if any(token in blob for token in ("memory", "context", "context database", "resource", "vault")):
             return {
                 "candidate_id": "memory_context_management",
-                "display_name": "记忆与上下文管理",
+                "display_name": "Memory & Context Management",
                 "reason": "仓库核心价值是为代理存储、管理和供给记忆/上下文，当前 taxonomy 仅用 information_retrieval 覆盖仍偏窄。",
             }
         if any(token in blob for token in ("vulnerability", "misconfiguration", "secret", "sbom", "security")):
             return {
                 "candidate_id": "security_analysis",
-                "display_name": "安全分析",
+                "display_name": "Security Analysis",
                 "reason": "仓库主要面向漏洞、配置错误、密钥或 SBOM 扫描，当前 taxonomy 没有对应能力。",
             }
         if any(token in blob for token in ("plugin", "hook", "slash-command", "statusline", "awesome skills")):
             return {
                 "candidate_id": "skill_plugin_ecosystem",
-                "display_name": "技能与插件生态",
+                "display_name": "Skill & Plugin Ecosystem",
                 "reason": "仓库主要提供技能、插件或代理扩展生态，不适合强行归入现有 taxonomy。",
             }
         if any(token in blob for token in ("training", "fine-tuning", "open models", "gemma", "qwen")):
             return {
                 "candidate_id": "model_training",
-                "display_name": "模型训练与微调",
+                "display_name": "Model Training & Fine-tuning",
                 "reason": "仓库主线是模型训练或微调，不适合归入现有能力 taxonomy。",
             }
         return None

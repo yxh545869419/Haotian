@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from haotian.config import PROJECT_ROOT
 from haotian.config import Settings
 from haotian.config import get_settings
 
@@ -51,11 +52,11 @@ def test_get_settings_normalizes_codex_skill_paths(monkeypatch, tmp_path) -> Non
         settings = get_settings()
 
         assert settings.codex_skill_roots == (
-            (first_cwd / "skills-a").resolve(),
-            (first_cwd / "skills-b").resolve(),
+            (PROJECT_ROOT / "skills-a").resolve(),
+            (PROJECT_ROOT / "skills-b").resolve(),
         )
-        assert settings.codex_managed_skill_root == (first_cwd / "managed").resolve()
-        assert settings.skill_audit_script == (first_cwd / "scripts/audit_skill.py").resolve()
+        assert settings.codex_managed_skill_root == (PROJECT_ROOT / "managed").resolve()
+        assert settings.skill_audit_script == (PROJECT_ROOT / "scripts/audit_skill.py").resolve()
     finally:
         get_settings.cache_clear()
 
@@ -108,29 +109,31 @@ def test_settings_accepts_report_dir_override(monkeypatch) -> None:
     assert settings.report_dir == Path("custom-reports")
 
 
-def test_get_settings_normalizes_relative_artifact_paths_against_load_cwd(monkeypatch, tmp_path) -> None:
+def test_get_settings_normalizes_relative_artifact_paths_against_repo_root(monkeypatch, tmp_path) -> None:
     first_cwd = tmp_path / "first-cwd"
     first_cwd.mkdir()
     monkeypatch.chdir(first_cwd)
     monkeypatch.setenv("TMP_REPO_DIR", "tmp-repos")
     monkeypatch.setenv("REPORT_DIR", "reports")
     monkeypatch.setenv("RUN_DIR", "runs")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./data/custom.db")
     get_settings.cache_clear()
     try:
         settings = get_settings()
 
-        assert settings.tmp_repo_dir == (first_cwd / "tmp-repos").resolve()
-        assert settings.report_dir == (first_cwd / "reports").resolve()
-        assert settings.run_dir == (first_cwd / "runs").resolve()
+        assert settings.database_url == f"sqlite:///{(PROJECT_ROOT / 'data' / 'custom.db').resolve().as_posix()}"
+        assert settings.tmp_repo_dir == (PROJECT_ROOT / "tmp-repos").resolve()
+        assert settings.report_dir == (PROJECT_ROOT / "reports").resolve()
+        assert settings.run_dir == (PROJECT_ROOT / "runs").resolve()
     finally:
         get_settings.cache_clear()
 
 
 def test_docs_mention_skill_sync_report_and_skill_sync_configuration() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
-    env_example = Path(".env.example").read_text(encoding="utf-8")
-    ops_doc = Path("docs/ops.md").read_text(encoding="utf-8")
-    architecture_doc = Path("docs/architecture.md").read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    ops_doc = (PROJECT_ROOT / "docs/ops.md").read_text(encoding="utf-8")
+    architecture_doc = (PROJECT_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
 
     assert "skill-sync-report.json" in readme
     assert "CODEX_SKILL_ROOTS" in env_example
