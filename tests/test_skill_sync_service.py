@@ -128,12 +128,12 @@ def test_skill_sync_installs_new_audit_safe_skill_atomically(tmp_path) -> None:
         inventory={},
     )
 
-    installed_root = managed_root / "acme-skill-repo-agent-designer"
     assert result.actions[0].action == "installed_new"
+    installed_root = Path(result.actions[0].installed_path or "")
     assert installed_root.joinpath("SKILL.md").exists()
     assert installed_root.joinpath("haotian-wrapper.json").exists()
     assert len(audit_service.calls) == 1
-    assert audit_service.calls[0].name.startswith(".haotian-stage-acme-skill-repo-agent-designer")
+    assert audit_service.calls[0].name.startswith(f".haotian-stage-{result.actions[0].slug}")
     assert list(managed_root.parent.glob(".haotian-stage-*")) == []
     assert result.summary["installed_new"] == 1
 
@@ -219,9 +219,30 @@ def test_skill_sync_installs_distinct_wrappers_for_same_skill_name_from_differen
 
     assert [action.action for action in result.actions] == ["installed_new", "installed_new"]
     assert len({action.slug for action in result.actions}) == 2
-    assert {action.slug for action in result.actions} == {"acme-browser-bot", "contoso-browser-bot"}
-    assert (managed_root / "acme-browser-bot" / "SKILL.md").exists()
-    assert (managed_root / "contoso-browser-bot" / "SKILL.md").exists()
+    assert result.actions[0].slug.startswith("acme-browser-bot")
+    assert result.actions[1].slug.startswith("contoso-browser-bot")
+    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
+    assert Path(result.actions[1].installed_path or "").joinpath("SKILL.md").exists()
+
+
+def test_skill_sync_install_slug_is_collision_safe_for_similar_repo_names(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+            _candidate("browser-bot", source_repo_full_name="acme/browser-bot"),
+            _candidate("bot", source_repo_full_name="acme-browser/bot"),
+        ],
+        inventory={},
+    )
+
+    assert [action.action for action in result.actions] == ["installed_new", "installed_new"]
+    assert len({action.slug for action in result.actions}) == 2
+    assert all(action.slug.startswith("acme-browser-bot") for action in result.actions)
+    assert all(Path(action.installed_path or "").joinpath("SKILL.md").exists() for action in result.actions)
 
 
 def test_skill_sync_does_not_align_unmanaged_exact_name_match(tmp_path) -> None:
@@ -238,7 +259,7 @@ def test_skill_sync_does_not_align_unmanaged_exact_name_match(tmp_path) -> None:
 
     assert result.actions[0].action == "installed_new"
     assert result.actions[0].matched_installed_slug is None
-    assert (managed_root / "acme-browser-bot" / "SKILL.md").exists()
+    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
 
 
 def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
@@ -255,7 +276,7 @@ def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
 
     assert result.actions[0].action == "installed_new"
     assert result.actions[0].matched_installed_slug is None
-    assert (managed_root / "acme-browser-bot" / "SKILL.md").exists()
+    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
 
 
 def test_skill_sync_rejects_path_escape_before_install(tmp_path) -> None:

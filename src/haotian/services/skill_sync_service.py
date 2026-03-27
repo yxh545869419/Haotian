@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -364,7 +365,16 @@ class SkillSyncService:
         parts = [repo_token]
         if candidate_token and not repo_token.endswith(candidate_token):
             parts.append(candidate_token)
-        install_slug = "-".join(part for part in parts if part)
+        digest = hashlib.sha1(
+            "\0".join(
+                (
+                    candidate.source_repo_full_name.strip(),
+                    candidate.slug.strip(),
+                    candidate.relative_root.strip() or ".",
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:10]
+        install_slug = "-".join(part for part in (*[part for part in parts if part], digest) if part)
         if not install_slug:
             raise ValueError(f"Candidate slug '{candidate.slug}' does not normalize to a usable directory name.")
         return install_slug
