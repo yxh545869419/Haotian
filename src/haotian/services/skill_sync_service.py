@@ -327,16 +327,37 @@ class SkillSyncService:
     ) -> bool:
         if not record.managed:
             return False
-        if SkillSyncService._normalized_token(record.managed_source_repo_full_name or "") != SkillSyncService._normalized_token(
+        if SkillSyncService._canonical_repo_identity(record.managed_source_repo_full_name) != SkillSyncService._canonical_repo_identity(
             candidate.source_repo_full_name
         ):
             return False
-        if record.managed_relative_root:
-            record_root = SkillSyncService._normalized_token(record.managed_relative_root)
-            candidate_root = SkillSyncService._normalized_token(candidate.relative_root)
-            if record_root != candidate_root:
-                return False
+        if SkillSyncService._canonical_relative_root(record.managed_relative_root) != SkillSyncService._canonical_relative_root(
+            candidate.relative_root
+        ):
+            return False
         return bool(candidate_tokens & SkillSyncService._record_tokens(record))
+
+    @staticmethod
+    def _canonical_repo_identity(value: str | None) -> tuple[str, str] | None:
+        if value is None:
+            return None
+        normalized = value.strip().replace("\\", "/")
+        parts = [part.strip().casefold() for part in normalized.split("/")]
+        if len(parts) != 2 or any(not part for part in parts):
+            return None
+        return parts[0], parts[1]
+
+    @staticmethod
+    def _canonical_relative_root(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip() or "."
+        if normalized == ".":
+            return "."
+        pure = PurePosixPath(normalized.replace("\\", "/"))
+        if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+            return None
+        return pure.as_posix()
 
     @staticmethod
     def _is_integrable(candidate: SkillSyncCandidate) -> bool:

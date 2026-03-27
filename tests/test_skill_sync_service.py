@@ -279,6 +279,64 @@ def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
     assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
 
 
+def test_skill_sync_does_not_align_managed_wrapper_from_different_repo_identity(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[_candidate("browser-bot", display_name="Browser Bot", source_repo_full_name="acme-browser/bot")],
+        inventory={
+            "acme-browser-bot-existing": _installed(
+                managed_root,
+                "acme-browser-bot-existing",
+                display_name="Browser Bot",
+                managed=True,
+                source_repo_full_name="acme/browser-bot",
+                wrapper_slug="browser-bot",
+            )
+        },
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].matched_installed_slug is None
+    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
+
+
+def test_skill_sync_does_not_align_managed_wrapper_from_different_relative_root(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+            _candidate(
+                "browser-bot",
+                display_name="Browser Bot",
+                source_repo_full_name="acme/browser-bot",
+                relative_root="skills-browser/bot",
+            )
+        ],
+        inventory={
+            "acme-browser-bot-existing": _installed(
+                managed_root,
+                "acme-browser-bot-existing",
+                display_name="Browser Bot",
+                managed=True,
+                source_repo_full_name="acme/browser-bot",
+                relative_root="skills/browser-bot",
+                wrapper_slug="browser-bot",
+            )
+        },
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].matched_installed_slug is None
+    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
+
+
 def test_skill_sync_rejects_path_escape_before_install(tmp_path) -> None:
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
