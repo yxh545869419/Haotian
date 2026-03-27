@@ -329,8 +329,7 @@ class ReportService:
                         f"状态：{card['status_label']}",
                         f"优先级：{card['priority_label']}",
                         f"代表仓库：{self._render_repo_list(tuple(card['representative_repos']))}",
-                        f"判断：{card['summary'] or card['reason'] or '_无_'}",
-                        f"分析备注：{card['analysis']['note']}",
+                        f"用途：{card['purpose']}",
                         f"建议：{card['suggestion']}",
                         "",
                     ]
@@ -376,9 +375,9 @@ class ReportService:
             "covered": len(sections["covered"]),
             "risks": len(sections["risks"]),
         }
-        cards = [self._build_capability_card(item) for item in sections["summary"]]
         highlight_items = sorted(sections["summary"], key=self._highlight_sort_key)[:5]
         taxonomy_gap_candidates = self._load_taxonomy_gap_candidates(target_date)
+        integrated_capability_ids = self._collect_integrated_capability_ids(skill_sync_payload)
         taxonomy_gap_summary = {
             "candidate_count": len(taxonomy_gap_candidates),
             "repo_count": sum(candidate["repo_count"] for candidate in taxonomy_gap_candidates),
@@ -403,8 +402,8 @@ class ReportService:
                     "dropped": len(repo_snapshot["dropped"]),
                 },
             },
-            "highlights": [self._build_highlight_entry(item) for item in highlight_items],
-            "capability_cards": cards,
+            "highlights": [self._build_highlight_entry(item, integrated_capability_ids) for item in highlight_items],
+            "capability_cards": [self._build_capability_card(item, integrated_capability_ids) for item in sections["summary"]],
             "taxonomy_gap_summary": taxonomy_gap_summary,
             "taxonomy_gap_candidates": taxonomy_gap_candidates,
             "skill_sync_summary": skill_sync_payload["summary"],
@@ -426,15 +425,18 @@ class ReportService:
             f"taxonomy gap {taxonomy_gap_count} 类。"
         )
 
-    def _build_capability_card(self, item: ReportItem) -> dict[str, object]:
+    def _build_capability_card(self, item: ReportItem, integrated_capability_ids: set[str]) -> dict[str, object]:
         priority = self._priority_for_item(item)
         representative_repos = list(item.source_repos[:3])
+        integration_status = self._integration_status_for_item(item, integrated_capability_ids)
         return {
             "capability_id": item.capability_id,
             "canonical_name": item.canonical_name,
             "display_name": item.display_name,
-            "status": item.status,
-            "status_label": self._localize_status(item.status),
+            "status": integration_status,
+            "status_label": self._localize_status(integration_status),
+            "taxonomy_status": item.status,
+            "taxonomy_status_label": self._localize_taxonomy_status(item.status),
             "priority": priority,
             "priority_label": self._localize_priority(priority),
             "needs_manual_attention": item.needs_manual_attention,
@@ -445,6 +447,7 @@ class ReportService:
             "periods_label": self._localize_periods(item.periods),
             "reason": item.reason,
             "summary": item.summary,
+            "purpose": item.summary or item.reason or "_无_",
             "suggestion": item.suggestion,
             "base_score": item.base_score,
             "analysis": {
@@ -452,7 +455,6 @@ class ReportService:
                 "depth_label": self._localize_analysis_depth(item.analysis_depth),
                 "fallback_used": item.fallback_used,
                 "cleanup_completed": item.cleanup_completed,
-                "note": self._build_analysis_note(item),
             },
             "evidence_preview": {
                 "matched_files_total": len(item.matched_files),
@@ -462,13 +464,16 @@ class ReportService:
             },
         }
 
-    def _build_highlight_entry(self, item: ReportItem) -> dict[str, object]:
+    def _build_highlight_entry(self, item: ReportItem, integrated_capability_ids: set[str]) -> dict[str, object]:
         priority = self._priority_for_item(item)
+        integration_status = self._integration_status_for_item(item, integrated_capability_ids)
         return {
             "capability_id": item.capability_id,
             "display_name": item.display_name,
-            "status": item.status,
-            "status_label": self._localize_status(item.status),
+            "status": integration_status,
+            "status_label": self._localize_status(integration_status),
+            "taxonomy_status": item.status,
+            "taxonomy_status_label": self._localize_taxonomy_status(item.status),
             "priority": priority,
             "priority_label": self._localize_priority(priority),
             "needs_manual_attention": item.needs_manual_attention,
@@ -562,6 +567,13 @@ class ReportService:
                         "repo_url": str(item.get("repo_url", "")),
                         "relative_root": str(item.get("relative_root", "")),
                         "files": list(item.get("files", [])) if isinstance(item.get("files", []), list) else [],
+                        "capability_ids": [
+                            str(value).strip()
+                            for value in item.get("capability_ids", [])
+                            if str(value).strip()
+                        ]
+                        if isinstance(item.get("capability_ids", []), list)
+                        else [],
                         "matched_installed_slug": item.get("matched_installed_slug"),
                         "matched_installed_path": item.get("matched_installed_path"),
                         "installed_path": item.get("installed_path"),
@@ -623,6 +635,14 @@ class ReportService:
     @staticmethod
     def _localize_status(status: str) -> str:
         labels = {
+            "integrated": "已集成",
+            "pending_confirmation": "需确认",
+        }
+        return labels.get(status, status)
+
+    @staticmethod
+    def _localize_taxonomy_status(status: str) -> str:
+        labels = {
             "new_capabilities": "新能力",
             "enhancement_candidates": "增强候选",
             "covered": "已覆盖",
@@ -630,19 +650,29 @@ class ReportService:
         }
         return labels.get(status, status)
 
-    def _build_analysis_note(self, item: ReportItem) -> str:
-        if item.analysis_depth:
-            depth_summary = f"{self._localize_analysis_depth(item.analysis_depth)}分析"
-        else:
-            depth_summary = "未提供分析深度"
-        fallback_summary = "存在回退" if item.fallback_used else "无回退"
-        cleanup_summary = "清理完成" if item.cleanup_completed else "清理未完成"
-        return (
-            f"{depth_summary}；"
-            f"{fallback_summary}；"
-            f"{cleanup_summary}；"
-            f"命中文件 {len(item.matched_files)} 个"
-        )
+    @staticmethod
+    def _collect_integrated_capability_ids(skill_sync_payload: dict[str, object]) -> set[str]:
+        integrated_actions = {"aligned_existing", "installed_new"}
+        capability_ids: set[str] = set()
+        actions = skill_sync_payload.get("actions", [])
+        if not isinstance(actions, list):
+            return capability_ids
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("action", "")).strip() not in integrated_actions:
+                continue
+            raw_ids = action.get("capability_ids", [])
+            if not isinstance(raw_ids, list):
+                continue
+            capability_ids.update(str(value).strip() for value in raw_ids if str(value).strip())
+        return capability_ids
+
+    @staticmethod
+    def _integration_status_for_item(item: ReportItem, integrated_capability_ids: set[str]) -> str:
+        if item.capability_id in integrated_capability_ids:
+            return "integrated"
+        return "pending_confirmation"
 
     @staticmethod
     def _render_repo_list(repos: tuple[str, ...]) -> str:

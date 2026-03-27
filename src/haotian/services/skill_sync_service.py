@@ -64,6 +64,7 @@ class SkillSyncAction:
     repo_url: str
     relative_root: str
     files: tuple[str, ...]
+    capability_ids: tuple[str, ...] = ()
     matched_installed_slug: str | None = None
     matched_installed_path: str | None = None
     installed_path: str | None = None
@@ -80,6 +81,7 @@ class SkillSyncAction:
             "repo_url": self.repo_url,
             "relative_root": self.relative_root,
             "files": list(self.files),
+            "capability_ids": list(self.capability_ids),
             "matched_installed_slug": self.matched_installed_slug,
             "matched_installed_path": self.matched_installed_path,
             "installed_path": self.installed_path,
@@ -720,6 +722,7 @@ class SkillSyncService:
             repo_url=candidate.repo_url,
             relative_root=candidate.relative_root,
             files=candidate.files,
+            capability_ids=candidate.capability_ids,
             matched_installed_slug=matched_installed_slug,
             matched_installed_path=matched_installed_path,
             installed_path=installed_path,

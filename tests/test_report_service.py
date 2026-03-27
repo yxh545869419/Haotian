@@ -254,14 +254,14 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert "统计：能力 1｜人工关注 0｜新增 0｜增强候选 1｜已覆盖 0｜风险 0" in content
     assert "仓库变化：今日 2 个｜新增 2 个｜移除 1 个" in content
     assert "## 今日重点" in content
-    assert "`浏览器自动化`：增强候选，优先级中，代表仓库 `acme/browser-bot`。" in content
+    assert "`浏览器自动化`：需确认，优先级中，代表仓库 `acme/browser-bot`。" in content
     assert "## 能力摘要" in content
     assert "### 浏览器自动化 (`browser_automation`)" in content
-    assert "状态：增强候选" in content
+    assert "状态：需确认" in content
     assert "优先级：中" in content
     assert "代表仓库：`acme/browser-bot`" in content
-    assert "判断：Automates browser workflows." in content
-    assert "分析备注：分层分析；无回退；清理完成；命中文件 2 个" in content
+    assert "用途：Automates browser workflows." in content
+    assert "分析备注：" not in content
     assert "建议：已自动归类为 POC 跟踪项；若需要推进落地再人工复核。" in content
     assert "## 产物路径" in content
 
@@ -272,12 +272,13 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert payload["report_date"] == "2026-03-20"
     assert payload["summary"]["total_capabilities"] == 1
     assert payload["executive_summary"]["headline"] == "今日识别 1 个能力，暂无人工关注项，重点跟进 1 个增强候选，taxonomy gap 0 类。"
-    assert payload["highlights"][0]["status_label"] == "增强候选"
+    assert payload["highlights"][0]["status_label"] == "需确认"
     assert payload["highlights"][0]["priority"] == "medium"
     assert payload["capability_cards"][0]["capability_id"] == "browser_automation"
-    assert payload["capability_cards"][0]["status_label"] == "增强候选"
+    assert payload["capability_cards"][0]["status_label"] == "需确认"
     assert payload["capability_cards"][0]["priority"] == "medium"
-    assert payload["capability_cards"][0]["analysis"]["depth_label"] == "分层"
+    assert payload["capability_cards"][0]["purpose"] == "Automates browser workflows."
+    assert "note" not in payload["capability_cards"][0]["analysis"]
     assert payload["capability_cards"][0]["evidence_preview"]["matched_files_total"] == 2
     assert payload["artifact_links"]["classification_output"].endswith("classification-output.json")
     assert payload["artifact_links"]["capability_audit"].endswith("capability-audit.json")
@@ -387,6 +388,105 @@ def test_report_payload_includes_skill_sync_summary_and_actions(tmp_path) -> Non
     assert payload["skill_sync_summary"]["aligned_existing"] == 1
     assert payload["skill_sync_actions"][0]["action"] == "aligned_existing"
     assert payload["artifact_links"]["skill_sync_report"].endswith("skill-sync-report.json")
+
+
+def test_report_service_marks_capability_as_integrated_when_skill_sync_aligned(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    repository = CapabilityRegistryRepository(database_url=database_url)
+    repository.upsert_capability(
+        CapabilityRegistryRecord(
+            capability_id="browser_automation",
+            canonical_name="Browser Automation",
+            status=CapabilityStatus.ACTIVE,
+            summary="Automates browser workflows.",
+            first_seen_at="2026-03-20T00:00:00Z",
+            last_seen_at="2026-03-20T00:00:00Z",
+            last_score=0.95,
+            mention_count=3,
+            consecutive_appearances=3,
+            source_repo_full_name="acme/browser-bot",
+        )
+    )
+    with get_connection(database_url) as connection:
+        _insert_repo_capability(
+            connection,
+            snapshot_date="2026-03-20",
+            period="daily",
+            repo_full_name="acme/browser-bot",
+            capability_id="browser_automation",
+            confidence=0.95,
+            reason="Daily trend mentions browser automation.",
+            summary="Automates browser workflows.",
+        )
+        _insert_repo_analysis_snapshot(
+            connection,
+            snapshot_date="2026-03-20",
+            repo_full_name="acme/browser-bot",
+        )
+        connection.execute(
+            """
+            INSERT INTO trending_repos (
+                snapshot_date,
+                period,
+                rank,
+                repo_full_name,
+                repo_url,
+                description,
+                language,
+                stars,
+                forks
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-03-20", "daily", 1, "acme/browser-bot", "https://github.com/acme/browser-bot", None, None, 10, 1),
+        )
+        connection.commit()
+
+    run_path = run_dir / "2026-03-20"
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("skill-sync-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-20",
+                "summary": {
+                    "config_ready": True,
+                    "candidate_count": 1,
+                    "action_count": 1,
+                    "aligned_existing": 1,
+                    "installed_new": 0,
+                    "discarded_non_integrable": 0,
+                    "blocked_audit_failure": 0,
+                    "blocked_ambiguous_match": 0,
+                    "rolled_back_install_failure": 0,
+                },
+                "actions": [
+                    {
+                        "action": "aligned_existing",
+                        "slug": "browser-bot",
+                        "display_name": "browser-bot",
+                        "source_repo_full_name": "acme/browser-bot",
+                        "repo_url": "https://github.com/acme/browser-bot",
+                        "relative_root": ".",
+                        "files": ["SKILL.md"],
+                        "matched_installed_slug": "browser-bot",
+                        "capability_ids": ["browser_automation"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir).generate_daily_report_json("2026-03-20")
+    report = json.loads(payload.read_text(encoding="utf-8"))
+
+    assert report["capability_cards"][0]["status_label"] == "已集成"
+    assert report["highlights"][0]["status_label"] == "已集成"
 
 
 @pytest.mark.parametrize(
@@ -591,9 +691,9 @@ def test_report_service_marks_fallback_analysis_in_markdown(tmp_path) -> None:
     report_dir = tmp_path / "reports"
     content = ReportService(database_url=database_url, report_dir=report_dir).generate_daily_report("2026-03-20").read_text(encoding="utf-8")
 
-    assert "状态：新能力" in content
+    assert "状态：需确认" in content
     assert "优先级：高" in content
-    assert "分析备注：回退分析；存在回退；清理未完成；命中文件 0 个" in content
+    assert "分析备注：" not in content
 
 
 def test_report_service_preserves_fallback_and_cleanup_from_sparse_joined_rows(tmp_path) -> None:
@@ -672,9 +772,9 @@ def test_report_service_handles_sparse_repo_analysis_snapshot_rows(tmp_path) -> 
     content = service.generate_daily_report("2026-03-20").read_text(encoding="utf-8")
     payload = json.loads(service.generate_daily_report_json("2026-03-20").read_text(encoding="utf-8"))
 
-    assert "状态：新能力" in content
+    assert "状态：需确认" in content
     assert "优先级：中" in content
-    assert "分析备注：未提供分析深度；存在回退；清理完成；命中文件 0 个" in content
+    assert "分析备注：" not in content
     assert payload["sections"]["new_capabilities"][0]["fallback_used"] is True
     assert payload["sections"]["new_capabilities"][0]["cleanup_completed"] is True
     assert payload["sections"]["new_capabilities"][0]["matched_files"] == []
