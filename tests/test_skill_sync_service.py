@@ -36,7 +36,10 @@ def _candidate(
     source_repo_full_name: str = "acme/skill-repo",
     repo_url: str = "https://github.com/acme/skill-repo",
     relative_root: str = ".",
-    files: tuple[str, ...] = ("SKILL.md",),
+    files: tuple[str, ...] = ("SKILL.md", "AGENTS.md"),
+    description: str = "Codex skill package for browser automation workflows.",
+    matched_keywords: tuple[str, ...] = ("SKILL.md", "AGENTS.md"),
+    architecture_signals: tuple[str, ...] = ("codex-skill-package",),
 ) -> SkillSyncCandidate:
     return SkillSyncCandidate(
         slug=slug,
@@ -45,6 +48,9 @@ def _candidate(
         repo_url=repo_url,
         relative_root=relative_root,
         files=files,
+        description=description,
+        matched_keywords=matched_keywords,
+        architecture_signals=architecture_signals,
         capability_ids=("browser_automation",),
     )
 
@@ -85,9 +91,11 @@ def _installed(
         skill_dir=skill_dir.resolve(),
         canonical_path=skill_dir.resolve(),
         display_name=display_name or slug,
+        description="Installed local skill.",
         relative_path=slug,
         root_index=0,
         managed=managed,
+        aliases=((wrapper_slug or slug),) if managed and (wrapper_slug or slug) != slug else (),
         managed_source_repo_full_name=source_repo_full_name if managed else None,
         managed_wrapper_slug=(wrapper_slug or slug) if managed else None,
         managed_relative_root=relative_root if managed else None,
@@ -113,7 +121,7 @@ def test_skill_sync_aligns_existing_skill_without_rewriting_it(tmp_path) -> None
 
     assert result.actions[0].action == "aligned_existing"
     assert result.actions[0].matched_installed_slug == "browser-bot"
-    assert audit_service.calls == []
+    assert audit_service.calls == [existing.skill_dir]
     assert result.summary["aligned_existing"] == 1
 
 
@@ -146,6 +154,28 @@ def test_skill_sync_discards_non_integrable_candidate(tmp_path) -> None:
     result = service.sync(
         report_date=date(2026, 3, 25),
         candidates=[_candidate("docs-only", files=("README.md",))],
+        inventory={},
+    )
+
+    assert result.actions[0].action == "discarded_non_integrable"
+    assert audit_service.calls == []
+
+
+def test_skill_sync_discards_lone_skill_manifest_without_support_files_or_runtime_signal(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+            _candidate(
+                "manifest-only",
+                files=("SKILL.md",),
+                matched_keywords=("SKILL.md",),
+                architecture_signals=(),
+            )
+        ],
         inventory={},
     )
 
@@ -245,21 +275,22 @@ def test_skill_sync_install_slug_is_collision_safe_for_similar_repo_names(tmp_pa
     assert all(Path(action.installed_path or "").joinpath("SKILL.md").exists() for action in result.actions)
 
 
-def test_skill_sync_does_not_align_unmanaged_exact_name_match(tmp_path) -> None:
+def test_skill_sync_aligns_audited_unmanaged_exact_name_match(tmp_path) -> None:
     shared_root = tmp_path / "shared"
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
     service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+    existing = _installed(shared_root, "browser-bot", display_name="Browser Bot", managed=False)
 
     result = service.sync(
         report_date=date(2026, 3, 25),
         candidates=[_candidate("browser-bot", display_name="Browser Bot", source_repo_full_name="acme/browser-bot")],
-        inventory={"browser-bot": _installed(shared_root, "browser-bot", display_name="Browser Bot", managed=False)},
+        inventory={"browser-bot": existing},
     )
 
-    assert result.actions[0].action == "installed_new"
-    assert result.actions[0].matched_installed_slug is None
-    assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
+    assert result.actions[0].action == "aligned_existing"
+    assert result.actions[0].matched_installed_slug == "browser-bot"
+    assert audit_service.calls == [existing.skill_dir]
 
 
 def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
@@ -277,6 +308,24 @@ def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
     assert result.actions[0].action == "installed_new"
     assert result.actions[0].matched_installed_slug is None
     assert Path(result.actions[0].installed_path or "").joinpath("SKILL.md").exists()
+
+
+def test_skill_sync_blocks_alignment_when_existing_local_skill_fails_audit(tmp_path) -> None:
+    shared_root = tmp_path / "shared"
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="block", overall_verdict="BLOCK", installable=False))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+    existing = _installed(shared_root, "browser-bot", display_name="Browser Bot", managed=False)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[_candidate("browser-bot", display_name="Browser Bot", source_repo_full_name="acme/browser-bot")],
+        inventory={"browser-bot": existing},
+    )
+
+    assert result.actions[0].action == "blocked_audit_failure"
+    assert result.actions[0].matched_installed_slug == "browser-bot"
+    assert audit_service.calls == [existing.skill_dir]
 
 
 def test_skill_sync_does_not_align_managed_wrapper_from_different_repo_identity(tmp_path) -> None:

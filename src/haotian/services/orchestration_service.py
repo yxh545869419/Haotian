@@ -321,6 +321,17 @@ class OrchestrationService:
                         repo_url=repo_url,
                         relative_root=package.relative_root or ".",
                         files=package.files,
+                        description=str(item.get("description", "")).strip(),
+                        matched_keywords=tuple(
+                            str(keyword).strip()
+                            for keyword in item.get("matched_keywords", ())
+                            if str(keyword).strip()
+                        ),
+                        architecture_signals=tuple(
+                            str(signal).strip()
+                            for signal in item.get("architecture_signals", ())
+                            if str(signal).strip()
+                        ),
                         capability_ids=capability_ids_by_repo.get(repo_full_name, ()),
                     )
                 )

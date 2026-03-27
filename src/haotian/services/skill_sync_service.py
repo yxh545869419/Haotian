@@ -45,6 +45,9 @@ class SkillSyncCandidate:
     repo_url: str
     relative_root: str
     files: tuple[str, ...]
+    description: str = ""
+    matched_keywords: tuple[str, ...] = ()
+    architecture_signals: tuple[str, ...] = ()
     capability_ids: tuple[str, ...] = ()
 
 
@@ -155,9 +158,11 @@ class SkillSyncService:
                     skill_dir=installed_path,
                     canonical_path=installed_path,
                     display_name=action.display_name,
+                    description=candidate.description,
                     relative_path=action.slug,
                     root_index=0,
                     managed=True,
+                    aliases=(candidate.slug,) if candidate.slug != action.slug else (),
                     managed_source_repo_full_name=action.source_repo_full_name,
                     managed_wrapper_slug=candidate.slug,
                     managed_relative_root=candidate.relative_root,
@@ -194,7 +199,7 @@ class SkillSyncService:
                 candidate,
                 "discarded_non_integrable",
                 slug=install_slug,
-                reason="Candidate is missing a SKILL.md manifest or uses an invalid relative_root.",
+                reason="Candidate does not satisfy the minimum Codex skill packaging and runtime-evidence requirements.",
             )
 
         match_state, matched_record = self._match_candidate(candidate, tuple(inventory_records.values()))
@@ -206,12 +211,35 @@ class SkillSyncService:
                 reason="Matched multiple installed skills with the same deterministic score.",
             )
         if matched_record is not None:
+            if self.audit_service is None:
+                return self._action(
+                    candidate,
+                    "blocked_audit_failure",
+                    slug=install_slug,
+                    matched_installed_slug=matched_record.slug,
+                    matched_installed_path=str(matched_record.skill_dir),
+                    reason="Skill sync cannot align an existing skill without an audit service.",
+                )
+            audit_result = self.audit_service.audit(matched_record.skill_dir)
+            if not audit_result.is_installable():
+                return self._action(
+                    candidate,
+                    "blocked_audit_failure",
+                    slug=install_slug,
+                    matched_installed_slug=matched_record.slug,
+                    matched_installed_path=str(matched_record.skill_dir),
+                    audit_status=str(getattr(audit_result, "status", "")),
+                    audit_verdict=str(getattr(audit_result, "overall_verdict", "")),
+                    reason="The matched installed skill did not pass audit.",
+                )
             return self._action(
                 candidate,
                 "aligned_existing",
                 slug=install_slug,
                 matched_installed_slug=matched_record.slug,
                 matched_installed_path=str(matched_record.skill_dir),
+                audit_status=str(getattr(audit_result, "status", "")),
+                audit_verdict=str(getattr(audit_result, "overall_verdict", "")),
                 reason="A unique installed skill already satisfies this candidate.",
             )
 
@@ -293,49 +321,126 @@ class SkillSyncService:
         candidate: SkillSyncCandidate,
         inventory_records: tuple[InstalledSkillRecord, ...],
     ) -> tuple[str, InstalledSkillRecord | None]:
-        managed_records = tuple(record for record in inventory_records if record.managed)
-        candidate_tokens = {
-            self._normalized_token(candidate.slug),
-            self._normalized_token(candidate.display_name),
-        }
+        candidate_tokens = self._candidate_exact_tokens(candidate)
         exact_matches = [
             record
-            for record in managed_records
-            if self._managed_record_matches_candidate(candidate, record, candidate_tokens)
+            for record in inventory_records
+            if self._record_can_match_candidate(candidate, record)
+            and candidate_tokens & self._record_exact_tokens(record)
         ]
         if len(exact_matches) == 1:
             return "matched", exact_matches[0]
         if len(exact_matches) > 1:
             return "ambiguous", None
-        return "none", None
+
+        candidate_similarity_tokens = self._candidate_similarity_tokens(candidate)
+        scored: list[tuple[float, InstalledSkillRecord]] = []
+        for record in inventory_records:
+            if not self._record_can_match_candidate(candidate, record):
+                continue
+            record_tokens = self._record_similarity_tokens(record)
+            if not record_tokens:
+                continue
+            score = self._token_set_jaccard(candidate_similarity_tokens, record_tokens)
+            if score >= 0.72:
+                scored.append((score, record))
+        if not scored:
+            return "none", None
+
+        scored.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].root_index,
+                0 if item[1].managed else 1,
+                item[1].slug.casefold(),
+                item[1].display_name.casefold(),
+            )
+        )
+        best_score = scored[0][0]
+        best_records = [record for score, record in scored if abs(score - best_score) < 1e-9]
+        if len(best_records) > 1:
+            return "ambiguous", None
+        return "matched", best_records[0]
 
     @staticmethod
-    def _record_tokens(record: InstalledSkillRecord) -> set[str]:
+    def _record_exact_tokens(record: InstalledSkillRecord) -> set[str]:
         tokens = {
             SkillSyncService._normalized_token(record.slug),
             SkillSyncService._normalized_token(record.display_name),
         }
         if record.managed_wrapper_slug:
             tokens.add(SkillSyncService._normalized_token(record.managed_wrapper_slug))
+        for alias in record.aliases:
+            tokens.add(SkillSyncService._normalized_token(alias))
         return {token for token in tokens if token}
 
     @staticmethod
-    def _managed_record_matches_candidate(
+    def _record_can_match_candidate(
         candidate: SkillSyncCandidate,
         record: InstalledSkillRecord,
-        candidate_tokens: set[str],
     ) -> bool:
         if not record.managed:
+            return True
+        record_repo = SkillSyncService._canonical_repo_identity(record.managed_source_repo_full_name)
+        candidate_repo = SkillSyncService._canonical_repo_identity(candidate.source_repo_full_name)
+        if record_repo is not None and record_repo != candidate_repo:
             return False
-        if SkillSyncService._canonical_repo_identity(record.managed_source_repo_full_name) != SkillSyncService._canonical_repo_identity(
-            candidate.source_repo_full_name
-        ):
+        record_root = SkillSyncService._canonical_relative_root(record.managed_relative_root)
+        candidate_root = SkillSyncService._canonical_relative_root(candidate.relative_root)
+        if record_root is not None and record_root != candidate_root:
             return False
-        if SkillSyncService._canonical_relative_root(record.managed_relative_root) != SkillSyncService._canonical_relative_root(
-            candidate.relative_root
-        ):
-            return False
-        return bool(candidate_tokens & SkillSyncService._record_tokens(record))
+        return True
+
+    @staticmethod
+    def _candidate_exact_tokens(candidate: SkillSyncCandidate) -> set[str]:
+        return {
+            token
+            for token in (
+                SkillSyncService._normalized_token(candidate.slug),
+                SkillSyncService._normalized_token(candidate.display_name),
+            )
+            if token
+        }
+
+    @staticmethod
+    def _candidate_similarity_tokens(candidate: SkillSyncCandidate) -> set[str]:
+        return SkillSyncService._expanded_token_set(
+            candidate.slug,
+            candidate.display_name,
+            candidate.description,
+            *candidate.matched_keywords,
+            *candidate.architecture_signals,
+        )
+
+    @staticmethod
+    def _record_similarity_tokens(record: InstalledSkillRecord) -> set[str]:
+        return SkillSyncService._expanded_token_set(
+            record.slug,
+            record.display_name,
+            record.description,
+            *record.aliases,
+            record.managed_wrapper_slug or "",
+        )
+
+    @staticmethod
+    def _expanded_token_set(*values: str) -> set[str]:
+        tokens: set[str] = set()
+        for value in values:
+            normalized = SkillSyncService._normalized_token(value)
+            if not normalized:
+                continue
+            tokens.add(normalized)
+            tokens.update(part for part in normalized.split("-") if part)
+        return tokens
+
+    @staticmethod
+    def _token_set_jaccard(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        union = left | right
+        if not union:
+            return 0.0
+        return len(left & right) / len(union)
 
     @staticmethod
     def _canonical_repo_identity(value: str | None) -> tuple[str, str] | None:
@@ -361,7 +466,34 @@ class SkillSyncService:
 
     @staticmethod
     def _is_integrable(candidate: SkillSyncCandidate) -> bool:
-        return "SKILL.md" in candidate.files and SkillSyncService._is_safe_relative_root(candidate.relative_root)
+        return (
+            "SKILL.md" in candidate.files
+            and SkillSyncService._is_safe_relative_root(candidate.relative_root)
+            and SkillSyncService._has_support_files(candidate.files)
+            and SkillSyncService._has_runtime_evidence(candidate)
+        )
+
+    @staticmethod
+    def _has_support_files(files: tuple[str, ...]) -> bool:
+        normalized_files = {item.strip().replace("\\", "/").casefold() for item in files}
+        return any(
+            path == "agents.md"
+            or path == "codex.md"
+            or path.endswith("/agents.md")
+            or path.endswith("/codex.md")
+            or path.startswith("scripts/")
+            or path.startswith("references/")
+            for path in normalized_files
+        )
+
+    @staticmethod
+    def _has_runtime_evidence(candidate: SkillSyncCandidate) -> bool:
+        runtime_signals = {
+            "codex-skill-package",
+            "skill-ecosystem",
+            "plugin-ecosystem",
+        }
+        return any(signal.strip().casefold() in runtime_signals for signal in candidate.architecture_signals)
 
     @staticmethod
     def _is_safe_relative_root(relative_root: str) -> bool:

@@ -20,9 +20,11 @@ class InstalledSkillRecord:
     skill_dir: Path
     canonical_path: Path
     display_name: str
+    description: str
     relative_path: str
     root_index: int
     managed: bool
+    aliases: tuple[str, ...] = ()
     managed_source_repo_full_name: str | None = None
     managed_wrapper_slug: str | None = None
     managed_relative_root: str | None = None
@@ -72,9 +74,11 @@ class CodexSkillInventoryService:
                     skill_dir=skill_dir.resolve(strict=False),
                     canonical_path=skill_dir.resolve(strict=False),
                     display_name=self._display_name(skill_dir, slug),
+                    description=self._description(skill_dir),
                     relative_path=self._relative_path(resolved_root, skill_dir),
                     root_index=root_index,
                     managed=managed,
+                    aliases=self._aliases(metadata, slug),
                     managed_source_repo_full_name=self._metadata_value(metadata, "source_repo_full_name"),
                     managed_wrapper_slug=self._metadata_value(metadata, "slug"),
                     managed_relative_root=self._metadata_value(metadata, "relative_root"),
@@ -124,6 +128,25 @@ class CodexSkillInventoryService:
         return fallback_slug
 
     @staticmethod
+    def _description(skill_dir: Path) -> str:
+        manifest = skill_dir / "SKILL.md"
+        try:
+            content = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+        saw_heading = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#") and not saw_heading:
+                saw_heading = True
+                continue
+            return stripped
+        return ""
+
+    @staticmethod
     def _managed_wrapper_metadata(skill_dir: Path) -> dict[str, object]:
         metadata_path = skill_dir / "haotian-wrapper.json"
         if not metadata_path.exists():
@@ -141,3 +164,11 @@ class CodexSkillInventoryService:
             normalized = value.strip()
             return normalized or None
         return None
+
+    @staticmethod
+    def _aliases(metadata: dict[str, object], slug: str) -> tuple[str, ...]:
+        aliases: list[str] = []
+        wrapper_slug = CodexSkillInventoryService._metadata_value(metadata, "slug")
+        if wrapper_slug and wrapper_slug != slug:
+            aliases.append(wrapper_slug)
+        return tuple(aliases)
