@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from pathlib import Path
 
 from haotian.services.codex_skill_inventory_service import CodexSkillInventoryService
 
 
-def _write_skill(root: Path, slug: str, *, description: str = "") -> Path:
+def _write_skill(
+    root: Path,
+    slug: str,
+    *,
+    description: str = "",
+    managed_wrapper: dict[str, object] | None = None,
+) -> Path:
     skill_dir = root / slug
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(f"# {slug}\n\n{description}", encoding="utf-8")
+    if managed_wrapper is not None:
+        (skill_dir / "haotian-wrapper.json").write_text(
+            json.dumps(managed_wrapper, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return skill_dir
 
 
@@ -100,3 +112,27 @@ def test_codex_skill_inventory_stops_at_first_skill_boundary(tmp_path) -> None:
     assert list(inventory) == ["parent-skill"]
     assert inventory["parent-skill"].skill_dir == parent.resolve()
     assert nested.resolve() not in {record.skill_dir for record in inventory.values()}
+
+
+def test_codex_skill_inventory_reads_managed_wrapper_metadata(tmp_path) -> None:
+    managed = tmp_path / "managed"
+    _write_skill(
+        managed,
+        "acme-browser-bot",
+        description="Managed wrapper",
+        managed_wrapper={
+            "schema_version": 1,
+            "managed_by": "haotian",
+            "slug": "browser-bot",
+            "display_name": "Browser Bot",
+            "source_repo_full_name": "acme/browser-bot",
+            "relative_root": ".",
+        },
+    )
+
+    inventory = CodexSkillInventoryService((managed,), managed_root=managed).scan()
+
+    assert inventory["acme-browser-bot"].managed is True
+    assert inventory["acme-browser-bot"].managed_wrapper_slug == "browser-bot"
+    assert inventory["acme-browser-bot"].managed_source_repo_full_name == "acme/browser-bot"
+    assert inventory["acme-browser-bot"].managed_relative_root == "."

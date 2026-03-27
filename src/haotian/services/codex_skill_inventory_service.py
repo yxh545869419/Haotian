@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Iterable
+import json
 from pathlib import Path
 import os
 
@@ -22,6 +23,9 @@ class InstalledSkillRecord:
     relative_path: str
     root_index: int
     managed: bool
+    managed_source_repo_full_name: str | None = None
+    managed_wrapper_slug: str | None = None
+    managed_relative_root: str | None = None
 
 
 class CodexSkillInventoryService:
@@ -61,6 +65,7 @@ class CodexSkillInventoryService:
                 slug = self._slug_for_skill_dir(skill_dir)
                 if slug in inventory:
                     continue
+                metadata = self._managed_wrapper_metadata(skill_dir) if managed else {}
                 inventory[slug] = InstalledSkillRecord(
                     slug=slug,
                     source_root=resolved_root,
@@ -70,6 +75,9 @@ class CodexSkillInventoryService:
                     relative_path=self._relative_path(resolved_root, skill_dir),
                     root_index=root_index,
                     managed=managed,
+                    managed_source_repo_full_name=self._metadata_value(metadata, "source_repo_full_name"),
+                    managed_wrapper_slug=self._metadata_value(metadata, "slug"),
+                    managed_relative_root=self._metadata_value(metadata, "relative_root"),
                 )
 
         return inventory
@@ -114,3 +122,22 @@ class CodexSkillInventoryService:
             if stripped:
                 break
         return fallback_slug
+
+    @staticmethod
+    def _managed_wrapper_metadata(skill_dir: Path) -> dict[str, object]:
+        metadata_path = skill_dir / "haotian-wrapper.json"
+        if not metadata_path.exists():
+            return {}
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _metadata_value(metadata: dict[str, object], key: str) -> str | None:
+        value = metadata.get(key)
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return None

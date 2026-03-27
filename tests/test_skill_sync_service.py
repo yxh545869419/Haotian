@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import json
 from pathlib import Path
 
 from haotian.services.codex_skill_inventory_service import InstalledSkillRecord
@@ -32,24 +33,52 @@ def _candidate(
     slug: str,
     *,
     display_name: str | None = None,
+    source_repo_full_name: str = "acme/skill-repo",
+    repo_url: str = "https://github.com/acme/skill-repo",
     relative_root: str = ".",
     files: tuple[str, ...] = ("SKILL.md",),
 ) -> SkillSyncCandidate:
     return SkillSyncCandidate(
         slug=slug,
         display_name=display_name or slug,
-        source_repo_full_name="acme/skill-repo",
-        repo_url="https://github.com/acme/skill-repo",
+        source_repo_full_name=source_repo_full_name,
+        repo_url=repo_url,
         relative_root=relative_root,
         files=files,
         capability_ids=("browser_automation",),
     )
 
 
-def _installed(root: Path, slug: str, *, display_name: str | None = None, managed: bool = False) -> InstalledSkillRecord:
+def _installed(
+    root: Path,
+    slug: str,
+    *,
+    display_name: str | None = None,
+    managed: bool = False,
+    source_repo_full_name: str | None = None,
+    relative_root: str = ".",
+    wrapper_slug: str | None = None,
+) -> InstalledSkillRecord:
     skill_dir = root / slug
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(f"# {display_name or slug}\n", encoding="utf-8")
+    if managed and source_repo_full_name:
+        (skill_dir / "haotian-wrapper.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "managed_by": "haotian",
+                    "slug": wrapper_slug or slug,
+                    "display_name": display_name or slug,
+                    "source_repo_full_name": source_repo_full_name,
+                    "relative_root": relative_root,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     return InstalledSkillRecord(
         slug=slug,
         source_root=root.resolve(),
@@ -59,13 +88,21 @@ def _installed(root: Path, slug: str, *, display_name: str | None = None, manage
         relative_path=slug,
         root_index=0,
         managed=managed,
+        managed_source_repo_full_name=source_repo_full_name if managed else None,
+        managed_wrapper_slug=(wrapper_slug or slug) if managed else None,
+        managed_relative_root=relative_root if managed else None,
     )
 
 
 def test_skill_sync_aligns_existing_skill_without_rewriting_it(tmp_path) -> None:
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
-    existing = _installed(managed_root, "browser-bot", managed=True)
+    existing = _installed(
+        managed_root,
+        "browser-bot",
+        managed=True,
+        source_repo_full_name="acme/skill-repo",
+    )
     service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
 
     result = service.sync(
@@ -91,12 +128,12 @@ def test_skill_sync_installs_new_audit_safe_skill_atomically(tmp_path) -> None:
         inventory={},
     )
 
-    installed_root = managed_root / "agent-designer"
+    installed_root = managed_root / "acme-skill-repo-agent-designer"
     assert result.actions[0].action == "installed_new"
     assert installed_root.joinpath("SKILL.md").exists()
     assert installed_root.joinpath("haotian-wrapper.json").exists()
     assert len(audit_service.calls) == 1
-    assert audit_service.calls[0].name.startswith(".haotian-stage-agent-designer")
+    assert audit_service.calls[0].name.startswith(".haotian-stage-acme-skill-repo-agent-designer")
     assert list(managed_root.parent.glob(".haotian-stage-*")) == []
     assert result.summary["installed_new"] == 1
 
@@ -140,8 +177,20 @@ def test_skill_sync_blocks_ambiguous_match(tmp_path) -> None:
     service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
 
     inventory = {
-        "browser-helper": _installed(shared_root, "browser-helper", display_name="Browser Helper"),
-        "browser helper": _installed(shared_root, "browser helper", display_name="Browser Helper"),
+        "browser-helper": _installed(
+            shared_root,
+            "browser-helper",
+            display_name="Browser Helper",
+            managed=True,
+            source_repo_full_name="acme/skill-repo",
+        ),
+        "browser helper": _installed(
+            shared_root,
+            "browser helper",
+            display_name="Browser Helper",
+            managed=True,
+            source_repo_full_name="acme/skill-repo",
+        ),
     }
 
     result = service.sync(
@@ -152,6 +201,61 @@ def test_skill_sync_blocks_ambiguous_match(tmp_path) -> None:
 
     assert result.actions[0].action == "blocked_ambiguous_match"
     assert audit_service.calls == []
+
+
+def test_skill_sync_installs_distinct_wrappers_for_same_skill_name_from_different_repos(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+            _candidate("browser-bot", source_repo_full_name="acme/browser-bot"),
+            _candidate("browser-bot", source_repo_full_name="contoso/browser-bot"),
+        ],
+        inventory={},
+    )
+
+    assert [action.action for action in result.actions] == ["installed_new", "installed_new"]
+    assert len({action.slug for action in result.actions}) == 2
+    assert {action.slug for action in result.actions} == {"acme-browser-bot", "contoso-browser-bot"}
+    assert (managed_root / "acme-browser-bot" / "SKILL.md").exists()
+    assert (managed_root / "contoso-browser-bot" / "SKILL.md").exists()
+
+
+def test_skill_sync_does_not_align_unmanaged_exact_name_match(tmp_path) -> None:
+    shared_root = tmp_path / "shared"
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[_candidate("browser-bot", display_name="Browser Bot", source_repo_full_name="acme/browser-bot")],
+        inventory={"browser-bot": _installed(shared_root, "browser-bot", display_name="Browser Bot", managed=False)},
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].matched_installed_slug is None
+    assert (managed_root / "acme-browser-bot" / "SKILL.md").exists()
+
+
+def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
+    shared_root = tmp_path / "shared"
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[_candidate("browser-bot", display_name="Browser Bot", source_repo_full_name="acme/browser-bot")],
+        inventory={"browser-buddy": _installed(shared_root, "browser-buddy", display_name="Browser Buddy", managed=False)},
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].matched_installed_slug is None
+    assert (managed_root / "acme-browser-bot" / "SKILL.md").exists()
 
 
 def test_skill_sync_rejects_path_escape_before_install(tmp_path) -> None:
