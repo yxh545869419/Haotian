@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import json
+import os
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from haotian.services.codex_skill_inventory_service import InstalledSkillRecord
 from haotian.services.skill_sync_service import SkillSyncCandidate, SkillSyncService
@@ -556,3 +560,34 @@ def test_skill_sync_rejects_path_escape_before_install(tmp_path) -> None:
 
     assert result.actions[0].action == "blocked_audit_failure"
     assert audit_service.calls == []
+
+
+def test_skill_sync_blocks_junction_managed_root_before_install(tmp_path) -> None:
+    if os.name != "nt" or not hasattr(Path("x"), "is_junction"):
+        pytest.skip("Windows junctions are not available")
+
+    managed_target = tmp_path / "managed-target"
+    managed_target.mkdir(parents=True, exist_ok=True)
+    junction_root = tmp_path / "managed-root-junction"
+
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_root), str(managed_target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_root.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=junction_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[_candidate("browser-bot", display_name="Browser Bot")],
+        inventory={},
+    )
+
+    assert result.actions[0].action == "blocked_audit_failure"
+    assert "alias" in result.actions[0].reason.casefold()
+    assert audit_service.calls == []
+    assert not any(managed_target.iterdir())

@@ -8,8 +8,10 @@ from datetime import date
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import os
 import re
 import shutil
+import stat
 from typing import Literal
 
 from haotian.config import get_settings
@@ -116,7 +118,7 @@ class SkillSyncService:
     ) -> None:
         settings = get_settings()
         resolved_managed_root = managed_root if managed_root is not None else settings.codex_managed_skill_root
-        self.managed_root = Path(resolved_managed_root).resolve(strict=False) if resolved_managed_root is not None else None
+        self.managed_root = Path(resolved_managed_root) if resolved_managed_root is not None else None
         self.inventory_service = inventory_service or CodexSkillInventoryService(managed_root=self.managed_root)
         if audit_service is None and settings.skill_audit_script is not None:
             audit_service = SkillAuditService(script_path=settings.skill_audit_script)
@@ -611,24 +613,42 @@ class SkillSyncService:
     def _paths_are_safe(self, *, target_dir: Path, staging_dir: Path) -> bool:
         if self.managed_root is None:
             return False
-        managed_root = self.managed_root.resolve(strict=False)
-        if self._has_symlink_component(managed_root.parent) or self._has_symlink_component(managed_root):
+        managed_root = self.managed_root
+        if self._has_alias_component(managed_root.parent) or self._has_alias_component(managed_root):
             return False
-        if target_dir.resolve(strict=False).parent != managed_root:
+        resolved_managed_root = managed_root.resolve(strict=False)
+        if target_dir.resolve(strict=False).parent != resolved_managed_root:
             return False
-        if staging_dir.resolve(strict=False).parent != managed_root.parent:
+        if staging_dir.resolve(strict=False).parent != resolved_managed_root.parent:
             return False
-        return not (staging_dir.exists() and staging_dir.is_symlink()) and not (target_dir.exists() and target_dir.is_symlink())
+        return not self._is_alias_path(staging_dir) and not self._is_alias_path(target_dir)
 
     @staticmethod
-    def _has_symlink_component(path: Path) -> bool:
-        current = path
-        while True:
-            if current.exists() and current.is_symlink():
+    def _has_alias_component(path: Path) -> bool:
+        for candidate in (path, *path.parents):
+            if candidate.exists() and SkillSyncService._is_alias_path(candidate):
                 return True
-            if current.parent == current:
+        return False
+
+    @staticmethod
+    def _is_alias_path(path: Path) -> bool:
+        if path.is_symlink():
+            return True
+
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction):
+            try:
+                return bool(is_junction())
+            except OSError:
                 return False
-            current = current.parent
+
+        if os.name == "nt":
+            try:
+                return bool(os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            except OSError:
+                return False
+
+        return False
 
     @staticmethod
     def _wrapper_files(candidate: SkillSyncCandidate) -> dict[str, str]:

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
+
+import pytest
 
 from haotian.services.codex_skill_inventory_service import CodexSkillInventoryService
 
@@ -112,6 +116,110 @@ def test_codex_skill_inventory_stops_at_first_skill_boundary(tmp_path) -> None:
     assert list(inventory) == ["parent-skill"]
     assert inventory["parent-skill"].skill_dir == parent.resolve()
     assert nested.resolve() not in {record.skill_dir for record in inventory.values()}
+
+
+def test_codex_skill_inventory_skips_alias_children_without_descending(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "skills"
+    group_dir = root / "collections"
+    direct_skill = _write_skill(group_dir, "direct-skill", description="Direct skill")
+    alias_child = group_dir / "alias-child"
+    alias_nested = _write_skill(alias_child, "nested-skill", description="Nested alias skill")
+
+    monkeypatch.setattr(
+        CodexSkillInventoryService,
+        "_is_alias_path",
+        lambda path: path == alias_child,
+    )
+
+    inventory = CodexSkillInventoryService((root,)).scan()
+
+    assert list(inventory) == ["direct-skill"]
+    assert inventory["direct-skill"].skill_dir == direct_skill.resolve()
+    assert alias_child.resolve() not in {record.skill_dir for record in inventory.values()}
+    assert alias_nested.resolve() not in {record.skill_dir for record in inventory.values()}
+
+
+def test_codex_skill_inventory_skips_windows_junction_children(tmp_path) -> None:
+    if os.name != "nt" or not hasattr(Path("x"), "is_junction"):
+        pytest.skip("Windows junctions are not available")
+
+    root = tmp_path / "skills"
+    group_dir = root / "collections"
+    direct_skill = _write_skill(group_dir, "direct-skill", description="Direct skill")
+
+    junction_target = tmp_path / "junction-target"
+    junction_skill = _write_skill(junction_target, "junction-skill", description="Junction skill")
+    junction_path = group_dir / "junction-child"
+    junction_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_path), str(junction_target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_path.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    inventory = CodexSkillInventoryService((root,)).scan()
+
+    assert list(inventory) == ["direct-skill"]
+    assert inventory["direct-skill"].skill_dir == direct_skill.resolve()
+    assert junction_path.resolve(strict=False) not in {record.skill_dir for record in inventory.values()}
+    assert junction_skill.resolve() not in {record.skill_dir for record in inventory.values()}
+
+
+def test_codex_skill_inventory_skips_windows_reparse_points_without_is_junction(tmp_path, monkeypatch) -> None:
+    path_type = type(Path("x"))
+    if os.name != "nt" or not hasattr(path_type, "is_junction"):
+        pytest.skip("Path.is_junction fallback path is only relevant on Windows")
+
+    root = tmp_path / "skills"
+    group_dir = root / "collections"
+    direct_skill = _write_skill(group_dir, "direct-skill", description="Direct skill")
+
+    junction_target = tmp_path / "junction-target"
+    junction_skill = _write_skill(junction_target, "junction-skill", description="Junction skill")
+    junction_path = group_dir / "junction-child"
+    junction_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_path), str(junction_target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_path.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    monkeypatch.setattr(path_type, "is_junction", None, raising=False)
+
+    inventory = CodexSkillInventoryService((root,)).scan()
+
+    assert list(inventory) == ["direct-skill"]
+    assert inventory["direct-skill"].skill_dir == direct_skill.resolve()
+    assert junction_path.resolve(strict=False) not in {record.skill_dir for record in inventory.values()}
+    assert junction_skill.resolve() not in {record.skill_dir for record in inventory.values()}
+
+
+def test_codex_skill_inventory_skips_windows_junction_roots(tmp_path) -> None:
+    if os.name != "nt" or not hasattr(Path("x"), "is_junction"):
+        pytest.skip("Windows junctions are not available")
+
+    junction_target = tmp_path / "junction-target"
+    target_skill = _write_skill(junction_target, "external-skill", description="External skill")
+    junction_root = tmp_path / "junction-root"
+
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_root), str(junction_target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_root.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    inventory = CodexSkillInventoryService((junction_root,)).scan()
+
+    assert inventory == {}
+    assert target_skill.resolve() not in {record.skill_dir for record in inventory.values()}
 
 
 def test_codex_skill_inventory_reads_managed_wrapper_metadata(tmp_path) -> None:

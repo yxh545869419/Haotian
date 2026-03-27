@@ -7,6 +7,7 @@ from collections.abc import Iterable
 import json
 from pathlib import Path, PurePosixPath
 import os
+import stat
 
 from haotian.config import get_settings
 
@@ -58,6 +59,8 @@ class CodexSkillInventoryService:
         inventory: dict[str, InstalledSkillRecord] = {}
 
         for root_index, root in enumerate(self.skill_roots):
+            if self._has_alias_component(root):
+                continue
             resolved_root = root.resolve(strict=False)
             if not resolved_root.exists() or not resolved_root.is_dir():
                 continue
@@ -91,7 +94,7 @@ class CodexSkillInventoryService:
         candidates: list[Path] = []
         for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
             current_path = Path(current)
-            dirs[:] = [name for name in dirs if not (current_path / name).is_symlink()]
+            dirs[:] = [name for name in dirs if not CodexSkillInventoryService._is_alias_path(current_path / name)]
             if "SKILL.md" in files:
                 candidates.append(current_path)
                 dirs[:] = []
@@ -184,3 +187,30 @@ class CodexSkillInventoryService:
         if pure.is_absolute() or len(pure.parts) != 1 or any(part in {"", ".", ".."} for part in pure.parts):
             return None
         return normalized
+
+    @staticmethod
+    def _is_alias_path(path: Path) -> bool:
+        if path.is_symlink():
+            return True
+
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction):
+            try:
+                return bool(is_junction())
+            except OSError:
+                return False
+
+        if os.name == "nt":
+            try:
+                return bool(os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            except OSError:
+                return False
+
+        return False
+
+    @staticmethod
+    def _has_alias_component(path: Path) -> bool:
+        for candidate in (path, *path.parents):
+            if candidate.exists() and CodexSkillInventoryService._is_alias_path(candidate):
+                return True
+        return False
