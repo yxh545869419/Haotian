@@ -136,7 +136,12 @@ def test_docs_mention_skill_sync_report_and_skill_sync_configuration() -> None:
     assert "CODEX_SKILL_ROOTS" in env_example
     assert "CODEX_MANAGED_SKILL_ROOT" in env_example
     assert "SKILL_AUDIT_SCRIPT" in env_example
-    assert "CODEX_SKILL_ROOTS" in ops_doc
-    assert "可选" in ops_doc
+    assert "如果要真正安装新的 Haotian-managed skill，至少需要：" in ops_doc
+    assert "- `CODEX_MANAGED_SKILL_ROOT`" in ops_doc
+    assert "- `SKILL_AUDIT_SCRIPT`" in ops_doc
+    assert (
+        "其中 `CODEX_SKILL_ROOTS` 可选；它主要用于扫描和对齐当前机器上已经安装的 skill，不配置时仍然可以把新的审计通过 skill 安装到 `CODEX_MANAGED_SKILL_ROOT`。"
+        in ops_doc
+    )
     assert "capability-audit.json" in architecture_doc
     assert "taxonomy-gap-candidates.json" in architecture_doc
