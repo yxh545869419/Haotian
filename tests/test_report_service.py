@@ -322,6 +322,9 @@ def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
     assert payload["taxonomy_gap_summary"]["candidate_count"] == 2
     assert payload["taxonomy_gap_candidates"][0]["display_name"] == "Content Generation / Marketing Automation"
     assert payload["executive_summary"]["taxonomy_gap_count"] == 2
+    assert payload["capability_cards"][0]["capability_id"] == "content_generation"
+    assert payload["capability_cards"][0]["status_label"] == "需确认"
+    assert payload["capability_cards"][0]["purpose"] == "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。"
 
 def test_report_payload_includes_skill_sync_summary_and_actions(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
@@ -653,6 +656,9 @@ def test_markdown_renders_taxonomy_gap_section(tmp_path) -> None:
     assert "## Taxonomy Gap 候选" in markdown
     assert "Content Generation / Marketing Automation" in markdown
     assert "taxonomy gap 2 类" in markdown
+    assert "## 能力摘要" in markdown
+    assert "### Content Generation / Marketing Automation (`content_generation`)" in markdown
+    assert "用途：仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。" in markdown
 
 
 def test_report_service_marks_fallback_analysis_in_markdown(tmp_path) -> None:

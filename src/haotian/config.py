@@ -103,6 +103,12 @@ def get_settings() -> Settings:
     """Return a cached settings instance for the current process."""
 
     settings = Settings.from_env()
+    if not settings.codex_skill_roots:
+        settings.codex_skill_roots = _default_codex_skill_roots()
+    if settings.codex_managed_skill_root is None:
+        settings.codex_managed_skill_root = _default_codex_managed_skill_root()
+    if settings.skill_audit_script is None:
+        settings.skill_audit_script = _default_skill_audit_script()
     settings.database_url = _resolve_database_url(settings.database_url)
     settings.tmp_repo_dir = _resolve_runtime_path(settings.tmp_repo_dir)
     settings.report_dir = _resolve_runtime_path(settings.report_dir)
@@ -131,3 +137,42 @@ def _resolve_database_url(database_url: str) -> str:
     raw_path = Path(database_url.removeprefix("sqlite:///"))
     resolved = _resolve_runtime_path(raw_path)
     return f"sqlite:///{resolved.as_posix()}"
+
+
+def _default_codex_skill_roots() -> tuple[Path, ...]:
+    home = Path.home()
+    candidates = (
+        home / ".agents" / "skills",
+        home / ".codex" / "skills",
+        Path("E:/CodexHome/skills"),
+    )
+    resolved: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        path = candidate.resolve(strict=False)
+        if not path.exists() or not path.is_dir():
+            continue
+        key = path.as_posix().casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(path)
+    return tuple(resolved)
+
+
+def _default_codex_managed_skill_root() -> Path:
+    return Path.home() / ".agents" / "skills" / "haotian-managed"
+
+
+def _default_skill_audit_script() -> Path | None:
+    home = Path.home()
+    candidates = (
+        home / ".agents" / "skills" / "skill-audit-guard" / "scripts" / "audit_skill.py",
+        home / ".codex" / "skills" / "skill-audit-guard" / "scripts" / "audit_skill.py",
+        Path("E:/CodexHome/skills/skill-audit-guard/scripts/audit_skill.py"),
+    )
+    for candidate in candidates:
+        path = candidate.resolve(strict=False)
+        if path.exists() and path.is_file():
+            return path
+    return None

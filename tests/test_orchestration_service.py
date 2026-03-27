@@ -1173,13 +1173,114 @@ def test_ingest_classification_output_writes_skill_sync_report_and_exposes_sync_
     sync_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "skill-sync-report.json").read_text(encoding="utf-8"))
 
     assert skill_sync_service.calls
-    assert skill_sync_service.calls[0][1][0].slug == "browser-bot"
-    assert skill_sync_service.calls[0][1][0].capability_ids == ("browser_automation",)
+    candidates = skill_sync_service.calls[0][1]
+    repo_candidate = next(candidate for candidate in candidates if candidate.source_repo_full_name == "acme/browser-bot")
+    assert repo_candidate.slug == "browser-bot"
+    assert repo_candidate.capability_ids == ("browser_automation",)
     assert result.skill_sync_summary["aligned_existing"] == 1
     assert result.skill_sync_actions[0]["action"] == "aligned_existing"
     assert sync_payload["summary"]["aligned_existing"] == 1
     assert report_payload["skill_sync_summary"]["aligned_existing"] == 1
     assert report_payload["skill_sync_actions"][0]["action"] == "aligned_existing"
+
+
+def test_ingest_classification_output_builds_active_capability_skill_candidates(tmp_path) -> None:
+    class SummaryCollector:
+        def fetch_trending(self, period: str) -> list[TrendingRepo]:
+            return [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period=period,
+                    rank=1,
+                    repo_full_name="acme/summary-skill",
+                    repo_url="https://github.com/acme/summary-skill",
+                    description="Summarizes multi-source research into concise briefs.",
+                    language="Python",
+                    stars=50,
+                    forks=5,
+                )
+            ]
+
+    from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
+
+    metadata_fetcher = StubMetadataFetcher(
+        {
+            "acme/summary-skill": RepositoryMetadataPayload(
+                readme="This repository researches recent topics and produces grounded summaries.",
+                topics=("summary", "research"),
+                pushed_at="2026-03-01T00:00:00Z",
+            )
+        }
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/summary-skill": RepositoryAnalysisResult(
+                repo_full_name="acme/summary-skill",
+                repo_url="https://github.com/acme/summary-skill",
+                analysis_depth="layered",
+                clone_strategy="shallow-clone",
+                clone_started=True,
+                analysis_completed=True,
+                cleanup_attempted=True,
+                cleanup_required=True,
+                cleanup_completed=True,
+                fallback_used=False,
+                root_files=("README.md", "SKILL.md"),
+                matched_files=("README.md", "SKILL.md", "main.py"),
+                matched_keywords=("README*", "*.md", "skill*", "main*"),
+                architecture_signals=("documentation-first", "skill-centric", "entrypoint-driven"),
+                probe_summary="Layered analysis complete.",
+                evidence_snippets=(
+                    AnalysisEvidenceSnippet(
+                        path="README.md",
+                        excerpt="Produces grounded summaries from multi-source research.",
+                        why_it_matters="Summarization is the core user-facing behavior.",
+                    ),
+                ),
+                analysis_limits=(),
+            )
+        }
+    )
+    skill_sync_service = StubSkillSyncService()
+    service = build_service(
+        tmp_path,
+        collector=SummaryCollector(),
+        metadata_fetcher=metadata_fetcher,
+        repository_analysis_service=analysis_service,
+        skill_sync_service=skill_sync_service,
+    )
+    staged = service.build_classification_input(date(2026, 3, 20))
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/summary-skill",
+                    "capabilities": [
+                        {
+                            "capability_id": "summarization",
+                            "confidence": 0.86,
+                            "reason": "The repository researches multiple sources and condenses them into grounded summaries.",
+                            "summary": "Produces concise grounded summaries from multi-source research.",
+                            "needs_review": False,
+                            "source_label": "codex",
+                        }
+                    ],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    assert skill_sync_service.calls
+    candidates = skill_sync_service.calls[0][1]
+    active_candidate = next(candidate for candidate in candidates if candidate.capability_ids == ("summarization",))
+    assert active_candidate.slug == "summarization"
+    assert active_candidate.source_repo_full_name == "haotian/summarization"
 
 
 def test_ingest_classification_output_writes_taxonomy_gap_candidates_for_unclassified_repositories(tmp_path) -> None:

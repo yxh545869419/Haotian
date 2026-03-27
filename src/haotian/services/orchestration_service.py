@@ -335,7 +335,43 @@ class OrchestrationService:
                         capability_ids=capability_ids_by_repo.get(repo_full_name, ()),
                     )
                 )
+        candidates.extend(self._build_active_capability_skill_candidates(capability_ids_by_repo))
         candidates.sort(key=lambda item: (item.slug.casefold(), item.source_repo_full_name.casefold(), item.relative_root.casefold()))
+        return candidates
+
+    def _build_active_capability_skill_candidates(
+        self,
+        capability_ids_by_repo: dict[str, tuple[str, ...]],
+    ) -> list[SkillSyncCandidate]:
+        todays_capability_ids = {
+            capability_id
+            for capability_ids in capability_ids_by_repo.values()
+            for capability_id in capability_ids
+        }
+        if not todays_capability_ids:
+            return []
+
+        candidates: list[SkillSyncCandidate] = []
+        for record in self.registry.list_capabilities(statuses=[CapabilityStatus.ACTIVE]):
+            if record.capability_id not in todays_capability_ids:
+                continue
+            slug = record.capability_id.replace("_", "-").strip("-")
+            if not slug:
+                continue
+            candidates.append(
+                SkillSyncCandidate(
+                    slug=slug,
+                    display_name=record.canonical_name or record.capability_id,
+                    source_repo_full_name=f"haotian/{record.capability_id}",
+                    repo_url="",
+                    relative_root=f"capabilities/{slug}",
+                    files=("SKILL.md", "README.md"),
+                    description=record.summary,
+                    matched_keywords=(record.capability_id,),
+                    architecture_signals=("capability-wrapper", "codex-skill-package"),
+                    capability_ids=(record.capability_id,),
+                )
+            )
         return candidates
 
     @staticmethod

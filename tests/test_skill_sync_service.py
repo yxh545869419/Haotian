@@ -189,6 +189,29 @@ def test_skill_sync_discards_lone_skill_manifest_without_support_files_or_runtim
     assert audit_service.calls == []
 
 
+def test_skill_sync_accepts_manifest_with_readme_and_settings_as_supporting_evidence(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+            _candidate(
+                "a11y-audit",
+                files=("README.md", "SKILL.md", "settings.json"),
+                matched_keywords=(),
+                architecture_signals=(),
+                relative_root="engineering-team/a11y-audit",
+            )
+        ],
+        inventory={},
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert len(audit_service.calls) == 1
+
+
 def test_skill_sync_blocks_failed_audit(tmp_path) -> None:
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="block", overall_verdict="BLOCK", installable=False))

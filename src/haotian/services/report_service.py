@@ -378,6 +378,10 @@ class ReportService:
         highlight_items = sorted(sections["summary"], key=self._highlight_sort_key)[:5]
         taxonomy_gap_candidates = self._load_taxonomy_gap_candidates(target_date)
         integrated_capability_ids = self._collect_integrated_capability_ids(skill_sync_payload)
+        cards = [
+            *[self._build_capability_card(item, integrated_capability_ids) for item in sections["summary"]],
+            *[self._build_taxonomy_gap_card(candidate) for candidate in taxonomy_gap_candidates],
+        ]
         taxonomy_gap_summary = {
             "candidate_count": len(taxonomy_gap_candidates),
             "repo_count": sum(candidate["repo_count"] for candidate in taxonomy_gap_candidates),
@@ -403,7 +407,7 @@ class ReportService:
                 },
             },
             "highlights": [self._build_highlight_entry(item, integrated_capability_ids) for item in highlight_items],
-            "capability_cards": [self._build_capability_card(item, integrated_capability_ids) for item in sections["summary"]],
+            "capability_cards": cards,
             "taxonomy_gap_summary": taxonomy_gap_summary,
             "taxonomy_gap_candidates": taxonomy_gap_candidates,
             "skill_sync_summary": skill_sync_payload["summary"],
@@ -479,6 +483,51 @@ class ReportService:
             "needs_manual_attention": item.needs_manual_attention,
             "representative_repos": list(item.source_repos[:3]),
             "summary": item.summary,
+        }
+
+    def _build_taxonomy_gap_card(self, candidate: dict[str, object]) -> dict[str, object]:
+        repo_full_names = tuple(
+            str(repo).strip()
+            for repo in candidate.get("repo_full_names", ())
+            if str(repo).strip()
+        )
+        priority = "high" if len(repo_full_names) >= 3 else "medium"
+        reason = str(candidate.get("reason", "")).strip()
+        capability_id = str(candidate.get("candidate_id", "")).strip()
+        display_name = str(candidate.get("display_name", capability_id)).strip() or capability_id
+        return {
+            "capability_id": capability_id,
+            "canonical_name": display_name,
+            "display_name": display_name,
+            "status": "pending_confirmation",
+            "status_label": self._localize_status("pending_confirmation"),
+            "taxonomy_status": "taxonomy_gap",
+            "taxonomy_status_label": self._localize_taxonomy_status("taxonomy_gap"),
+            "priority": priority,
+            "priority_label": self._localize_priority(priority),
+            "needs_manual_attention": True,
+            "repo_count": len(repo_full_names),
+            "representative_repos": list(repo_full_names[:3]),
+            "source_repos": list(repo_full_names),
+            "periods": [],
+            "periods_label": "_无_",
+            "reason": reason,
+            "summary": "",
+            "purpose": reason or "_无_",
+            "suggestion": "当前 taxonomy 尚未覆盖该能力，建议确认是否扩展 taxonomy 并评估是否需要新建 skill。",
+            "base_score": float(len(repo_full_names)),
+            "analysis": {
+                "depth": "",
+                "depth_label": "_未提供_",
+                "fallback_used": False,
+                "cleanup_completed": True,
+            },
+            "evidence_preview": {
+                "matched_files_total": 0,
+                "matched_files_preview": [],
+                "snippet_count": 0,
+                "snippets": [],
+            },
         }
 
     def _build_artifact_links(self, target_date: date) -> dict[str, str]:
@@ -647,6 +696,7 @@ class ReportService:
             "enhancement_candidates": "增强候选",
             "covered": "已覆盖",
             "risks": "风险",
+            "taxonomy_gap": "Taxonomy Gap",
         }
         return labels.get(status, status)
 
