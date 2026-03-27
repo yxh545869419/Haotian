@@ -322,16 +322,26 @@ class SkillSyncService:
         inventory_records: tuple[InstalledSkillRecord, ...],
     ) -> tuple[str, InstalledSkillRecord | None]:
         candidate_tokens = self._candidate_exact_tokens(candidate)
-        exact_matches = [
-            record
-            for record in inventory_records
-            if self._record_can_match_candidate(candidate, record)
-            and candidate_tokens & self._record_exact_tokens(record)
-        ]
-        if len(exact_matches) == 1:
-            return "matched", exact_matches[0]
-        if len(exact_matches) > 1:
-            return "ambiguous", None
+        exact_matches: list[tuple[int, int, int, str, str, InstalledSkillRecord]] = []
+        for record in inventory_records:
+            if not self._record_can_match_candidate(candidate, record):
+                continue
+            rank = self._exact_match_rank(candidate_tokens, record)
+            if rank is None:
+                continue
+            exact_matches.append(
+                (
+                    rank,
+                    record.root_index,
+                    0 if record.managed else 1,
+                    record.slug.casefold(),
+                    record.display_name.casefold(),
+                    record,
+                )
+            )
+        if exact_matches:
+            exact_matches.sort()
+            return "matched", exact_matches[0][-1]
 
         candidate_similarity_tokens = self._candidate_similarity_tokens(candidate)
         scored: list[tuple[float, InstalledSkillRecord]] = []
@@ -356,23 +366,39 @@ class SkillSyncService:
                 item[1].display_name.casefold(),
             )
         )
-        best_score = scored[0][0]
-        best_records = [record for score, record in scored if abs(score - best_score) < 1e-9]
-        if len(best_records) > 1:
-            return "ambiguous", None
-        return "matched", best_records[0]
+        return "matched", scored[0][1]
 
     @staticmethod
-    def _record_exact_tokens(record: InstalledSkillRecord) -> set[str]:
-        tokens = {
-            SkillSyncService._normalized_token(record.slug),
-            SkillSyncService._normalized_token(record.display_name),
+    def _exact_match_rank(candidate_tokens: set[str], record: InstalledSkillRecord) -> int | None:
+        if candidate_tokens & SkillSyncService._record_canonical_tokens(record):
+            return 0
+        if candidate_tokens & SkillSyncService._record_alias_tokens(record):
+            return 1
+        return None
+
+    @staticmethod
+    def _record_canonical_tokens(record: InstalledSkillRecord) -> set[str]:
+        return {
+            token
+            for token in (
+                SkillSyncService._normalized_token(record.slug),
+                SkillSyncService._normalized_token(record.display_name),
+            )
+            if token
         }
+
+    @staticmethod
+    def _record_alias_tokens(record: InstalledSkillRecord) -> set[str]:
+        tokens = set()
         if record.managed_wrapper_slug:
             tokens.add(SkillSyncService._normalized_token(record.managed_wrapper_slug))
         for alias in record.aliases:
             tokens.add(SkillSyncService._normalized_token(alias))
         return {token for token in tokens if token}
+
+    @staticmethod
+    def _record_exact_tokens(record: InstalledSkillRecord) -> set[str]:
+        return SkillSyncService._record_canonical_tokens(record) | SkillSyncService._record_alias_tokens(record)
 
     @staticmethod
     def _record_can_match_candidate(
@@ -405,8 +431,6 @@ class SkillSyncService:
     @staticmethod
     def _candidate_similarity_tokens(candidate: SkillSyncCandidate) -> set[str]:
         return SkillSyncService._expanded_token_set(
-            candidate.slug,
-            candidate.display_name,
             candidate.description,
             *candidate.matched_keywords,
             *candidate.architecture_signals,
@@ -414,13 +438,7 @@ class SkillSyncService:
 
     @staticmethod
     def _record_similarity_tokens(record: InstalledSkillRecord) -> set[str]:
-        return SkillSyncService._expanded_token_set(
-            record.slug,
-            record.display_name,
-            record.description,
-            *record.aliases,
-            record.managed_wrapper_slug or "",
-        )
+        return SkillSyncService._expanded_token_set(record.description)
 
     @staticmethod
     def _expanded_token_set(*values: str) -> set[str]:

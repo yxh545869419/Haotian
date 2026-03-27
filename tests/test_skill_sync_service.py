@@ -60,10 +60,12 @@ def _installed(
     slug: str,
     *,
     display_name: str | None = None,
+    description: str = "Installed local skill.",
     managed: bool = False,
     source_repo_full_name: str | None = None,
     relative_root: str = ".",
     wrapper_slug: str | None = None,
+    root_index: int = 0,
 ) -> InstalledSkillRecord:
     skill_dir = root / slug
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -91,9 +93,9 @@ def _installed(
         skill_dir=skill_dir.resolve(),
         canonical_path=skill_dir.resolve(),
         display_name=display_name or slug,
-        description="Installed local skill.",
+        description=description,
         relative_path=slug,
-        root_index=0,
+        root_index=root_index,
         managed=managed,
         aliases=((wrapper_slug or slug),) if managed and (wrapper_slug or slug) != slug else (),
         managed_source_repo_full_name=source_repo_full_name if managed else None,
@@ -200,37 +202,38 @@ def test_skill_sync_blocks_failed_audit(tmp_path) -> None:
     assert list(managed_root.parent.glob(".haotian-stage-*")) == []
 
 
-def test_skill_sync_blocks_ambiguous_match(tmp_path) -> None:
+def test_skill_sync_prefers_canonical_match_over_alias_match(tmp_path) -> None:
     shared_root = tmp_path / "shared"
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
     service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
 
     inventory = {
-        "browser-helper": _installed(
+        "browser-bot": _installed(
             shared_root,
-            "browser-helper",
-            display_name="Browser Helper",
-            managed=True,
-            source_repo_full_name="acme/skill-repo",
+            "browser-bot",
+            display_name="Browser Bot",
+            managed=False,
         ),
-        "browser helper": _installed(
-            shared_root,
-            "browser helper",
-            display_name="Browser Helper",
+        "managed-wrapper": _installed(
+            managed_root,
+            "managed-wrapper",
+            display_name="Managed Wrapper",
             managed=True,
             source_repo_full_name="acme/skill-repo",
+            wrapper_slug="browser-bot",
         ),
     }
 
     result = service.sync(
         report_date=date(2026, 3, 25),
-        candidates=[_candidate("browser helper", display_name="Browser Helper")],
+        candidates=[_candidate("browser-bot", display_name="Browser Bot")],
         inventory=inventory,
     )
 
-    assert result.actions[0].action == "blocked_ambiguous_match"
-    assert audit_service.calls == []
+    assert result.actions[0].action == "aligned_existing"
+    assert result.actions[0].matched_installed_slug == "browser-bot"
+    assert audit_service.calls == [inventory["browser-bot"].skill_dir]
 
 
 def test_skill_sync_installs_distinct_wrappers_for_same_skill_name_from_different_repos(tmp_path) -> None:
@@ -273,6 +276,47 @@ def test_skill_sync_install_slug_is_collision_safe_for_similar_repo_names(tmp_pa
     assert len({action.slug for action in result.actions}) == 2
     assert all(action.slug.startswith("acme-browser-bot") for action in result.actions)
     assert all(Path(action.installed_path or "").joinpath("SKILL.md").exists() for action in result.actions)
+
+
+def test_skill_sync_similarity_uses_root_precedence_tiebreaker(tmp_path) -> None:
+    shared_root = tmp_path / "shared"
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+
+    inventory = {
+        "browser-helper": _installed(
+            shared_root,
+            "browser-helper",
+            display_name="Browser Helper",
+            description="Codex skill package for browser automation workflows.",
+            root_index=0,
+        ),
+        "browser-driver": _installed(
+            shared_root,
+            "browser-driver",
+            display_name="Browser Driver",
+            description="Codex skill package for browser automation workflows.",
+            root_index=1,
+        ),
+    }
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+                _candidate(
+                    "website-runner",
+                    display_name="Website Runner",
+                    description="Codex skill package for browser automation workflows.",
+                    matched_keywords=(),
+                )
+            ],
+            inventory=inventory,
+        )
+
+    assert result.actions[0].action == "aligned_existing"
+    assert result.actions[0].matched_installed_slug == "browser-helper"
+    assert audit_service.calls == [inventory["browser-helper"].skill_dir]
 
 
 def test_skill_sync_aligns_audited_unmanaged_exact_name_match(tmp_path) -> None:
