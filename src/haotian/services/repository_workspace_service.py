@@ -8,6 +8,7 @@ import os
 import stat
 import shutil
 import subprocess
+import time
 
 from haotian.config import get_settings
 
@@ -20,6 +21,8 @@ class ClonedWorkspace:
 
 class RepositoryWorkspaceService:
     """Clone and clean up temporary repository workspaces scoped to a run label."""
+
+    _cleanup_retry_delays = (0.05, 0.1, 0.2)
 
     def __init__(self, run_label: str, base_dir: Path | str | None = None) -> None:
         self.run_label = self._validate_run_label(run_label)
@@ -45,7 +48,7 @@ class RepositoryWorkspaceService:
         if workspace.path.resolve(strict=False) != expected_path.resolve(strict=False):
             raise ValueError("workspace path must match repo_full_name")
         self._ensure_within_workspace_root(expected_path)
-        shutil.rmtree(expected_path, ignore_errors=False, onerror=self._remove_readonly)
+        self._remove_directory_tree(expected_path)
 
     @staticmethod
     def _remove_readonly(func, path, exc_info) -> None:
@@ -58,7 +61,7 @@ class RepositoryWorkspaceService:
         if not target.exists() and not target.is_symlink():
             return
         if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target, ignore_errors=False, onerror=self._remove_readonly)
+            self._remove_directory_tree(target)
             return
 
         try:
@@ -66,6 +69,18 @@ class RepositoryWorkspaceService:
         except PermissionError:
             os.chmod(target, stat.S_IWRITE)
             target.unlink()
+
+    def _remove_directory_tree(self, target: Path) -> None:
+        for attempt in range(len(self._cleanup_retry_delays) + 1):
+            try:
+                shutil.rmtree(target, ignore_errors=False, onerror=self._remove_readonly)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if attempt >= len(self._cleanup_retry_delays) or not target.exists():
+                    raise
+                time.sleep(self._cleanup_retry_delays[attempt])
 
     def _ensure_within_workspace_root(self, path: Path) -> None:
         workspace_root = self._resolved_workspace_root()

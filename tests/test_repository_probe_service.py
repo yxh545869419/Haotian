@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from haotian.services.repository_probe_service import EvidenceSnippet
 from haotian.services.repository_probe_service import RepositoryProbeService
@@ -22,6 +26,139 @@ def write_repo_file(root: Path, relative_path: str, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def test_probe_prioritizes_full_skill_path_matrix(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "SKILL.md", "# Root skill")
+    write_repo_file(repo, "AGENTS.md", "# Root agents")
+    write_repo_file(repo, "codex.md", "# Root codex")
+    write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
+    write_repo_file(repo, "skills/app-store-optimization/AGENTS.md", "# Nested agents")
+    write_repo_file(repo, "skills/app-store-optimization/codex.md", "# Nested codex")
+    write_repo_file(repo, "agents/planner.md", "# Agent guide")
+    write_repo_file(repo, "commands/refresh.md", "# Command guide")
+    write_repo_file(repo, "references/glossary.md", "# Reference guide")
+    write_repo_file(repo, "scripts/sync.py", "print('sync')\n")
+
+    result = RepositoryProbeService(max_files=12, max_file_bytes=256).probe(repo)
+
+    assert "SKILL.md" in result.matched_files
+    assert "AGENTS.md" in result.matched_files
+    assert "codex.md" in result.matched_files
+    assert "skills/app-store-optimization/SKILL.md" in result.matched_files
+    assert "skills/app-store-optimization/AGENTS.md" in result.matched_files
+    assert "skills/app-store-optimization/codex.md" in result.matched_files
+    assert "agents/planner.md" in result.matched_files
+    assert "commands/refresh.md" in result.matched_files
+    assert "references/glossary.md" in result.matched_files
+    assert "scripts/sync.py" in result.matched_files
+    assert "SKILL.md" in result.matched_keywords
+    assert "AGENTS.md" in result.matched_keywords
+    assert "codex.md" in result.matched_keywords
+    assert "skills/**/*.md" in result.matched_keywords
+    assert "agents/**/*.md" in result.matched_keywords
+    assert "commands/**/*.md" in result.matched_keywords
+    assert "references/**/*.md" in result.matched_keywords
+    assert "scripts/**/*.py" in result.matched_keywords
+    assert "codex-skill-package" in result.architecture_signals
+    assert "skill-ecosystem" in result.architecture_signals
+    assert "plugin-ecosystem" in result.architecture_signals
+
+
+def test_probe_preserves_basename_signals_inside_skill_directories(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
+    write_repo_file(repo, "skills/app-store-optimization/main.py", "def main() -> None:\n    pass\n")
+    write_repo_file(repo, "skills/app-store-optimization/workflow.py", "def run_workflow() -> None:\n    pass\n")
+    write_repo_file(repo, "skills/app-store-optimization/app.py", "print('skill package')\n")
+    write_repo_file(repo, "skills/app-store-optimization/scripts/sync.py", "print('sync')\n")
+
+    result = RepositoryProbeService(max_files=8, max_file_bytes=256).probe(repo)
+
+    assert "main*" in result.matched_keywords
+    assert "workflow*" in result.matched_keywords
+    assert "app*" in result.matched_keywords
+    assert "scripts/**/*.py" in result.matched_keywords
+    assert "entrypoint-driven" in result.architecture_signals
+    assert "workflow-orchestration" in result.architecture_signals
+    assert "plugin-ecosystem" in result.architecture_signals
+
+
+def test_probe_does_not_treat_skill_package_directory_name_as_entrypoint(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "skills/app-store-optimization/SKILL.md", "# Nested skill")
+
+    result = RepositoryProbeService(max_files=8, max_file_bytes=256).probe(repo)
+
+    assert "app*" not in result.matched_keywords
+    assert "entrypoint-driven" not in result.architecture_signals
+
+
+def test_probe_does_not_promote_root_agent_docs_to_skill_package_without_manifest(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "AGENTS.md", "# Root agents")
+    write_repo_file(repo, "codex.md", "# Root codex")
+    write_repo_file(repo, "main.py", "def main() -> None:\n    pass\n")
+    write_repo_file(repo, "workflow.py", "def run_workflow() -> None:\n    pass\n")
+
+    result = RepositoryProbeService(max_files=2, max_file_bytes=256).probe(repo)
+
+    assert result.matched_files == ("main.py", "workflow.py")
+    assert "AGENTS.md" not in result.matched_files
+    assert "codex.md" not in result.matched_files
+    assert "codex-skill-package" not in result.architecture_signals
+    assert "skill-ecosystem" not in result.architecture_signals
+
+
+def test_probe_ignores_windows_junction_skill_evidence(tmp_path) -> None:
+    if os.name != "nt" or not hasattr(Path("x"), "is_junction"):
+        pytest.skip("Windows junctions are not available")
+
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "main.py", "def main() -> None:\n    pass\n")
+
+    external_root = tmp_path / "external-skill"
+    write_repo_file(external_root, "SKILL.md", "# External skill")
+    write_repo_file(external_root, "AGENTS.md", "# External agents")
+    write_repo_file(external_root, "scripts/sync.py", "print('external')\n")
+
+    junction_path = repo / "skills" / "external"
+    junction_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_path), str(external_root)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_path.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    probe = RepositoryProbeService(max_files=10, max_file_bytes=256).probe(repo)
+
+    assert probe.matched_files == ("main.py",)
+    assert "entrypoint-driven" in probe.architecture_signals
+    assert "codex-skill-package" not in probe.architecture_signals
+    assert "skill-ecosystem" not in probe.architecture_signals
+    assert "plugin-ecosystem" not in probe.architecture_signals
+
+
+def test_probe_ignores_root_alias_files_in_first_pass(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    root_skill = write_repo_file(repo, "SKILL.md", "# External-looking root skill")
+    write_repo_file(repo, "main.py", "def main() -> None:\n    pass\n")
+
+    for target in (
+        "haotian.services.repository_probe_service.is_alias_path",
+        "haotian.services.path_alias_guard.is_alias_path",
+    ):
+        monkeypatch.setattr(target, lambda path: path == root_skill)
+
+    probe = RepositoryProbeService(max_files=10, max_file_bytes=256).probe(repo)
+
+    assert probe.matched_files == ("main.py",)
+    assert "entrypoint-driven" in probe.architecture_signals
+    assert "codex-skill-package" not in probe.architecture_signals
+    assert "skill-ecosystem" not in probe.architecture_signals
 
 
 def test_probe_prioritizes_skill_and_markdown_files(tmp_path) -> None:

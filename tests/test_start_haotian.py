@@ -39,3 +39,24 @@ def test_launcher_reports_missing_dependency(monkeypatch) -> None:
 
     assert "pydantic" in message
     assert "python -m pip install -e ." in message
+
+
+def test_launcher_reconfigures_console_streams_for_utf8(monkeypatch) -> None:
+    class DummyStream:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def reconfigure(self, **kwargs: str) -> None:
+            self.calls.append(kwargs)
+
+    stdout = DummyStream()
+    stderr = DummyStream()
+
+    monkeypatch.setattr(start_haotian.sys, "stdout", stdout)
+    monkeypatch.setattr(start_haotian.sys, "stderr", stderr)
+
+    start_haotian._configure_console_streams()
+
+    expected = [{"encoding": "utf-8", "errors": "replace"}]
+    assert stdout.calls == expected
+    assert stderr.calls == expected

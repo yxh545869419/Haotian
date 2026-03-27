@@ -16,6 +16,9 @@ from haotian.registry.capability_registry import CapabilityRegistryRepository, C
 from haotian.services.classification_artifact_service import ClassificationArtifactService
 from haotian.services.orchestration_service import OrchestrationService
 from haotian.services.report_service import ReportService
+from haotian.services.skill_sync_service import SkillSyncAction
+from haotian.services.skill_sync_service import SkillSyncCandidate
+from haotian.services.skill_sync_service import SkillSyncResult
 from haotian.db.schema import get_connection
 
 
@@ -66,23 +69,42 @@ class StubCollector:
 
 
 class StubMetadataFetcher:
-    def fetch(self, repo_full_name: str):
+    def __init__(self, payloads=None) -> None:  # noqa: ANN001
         from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
 
-        payloads = {
+        default_payloads = {
             "acme/browser-bot": RepositoryMetadataPayload(
                 readme="Browser automation workflows for websites.",
                 topics=("browser-agent",),
+                pushed_at="2026-03-01T00:00:00Z",
             ),
             "acme/extractor": RepositoryMetadataPayload(
                 readme="Data extraction pipeline. Workflow orchestration across OCR and parsing jobs.",
                 topics=("ocr", "automation"),
+                pushed_at="2026-03-01T00:00:00Z",
             ),
-            "acme/alpha": RepositoryMetadataPayload(readme="Alpha repo.", topics=("alpha",)),
-            "acme/bravo": RepositoryMetadataPayload(readme="Bravo repo.", topics=("bravo",)),
-            "acme/charlie": RepositoryMetadataPayload(readme="Charlie repo.", topics=("charlie",)),
+            "acme/alpha": RepositoryMetadataPayload(
+                readme="Alpha repo.",
+                topics=("alpha",),
+                pushed_at="2026-03-01T00:00:00Z",
+            ),
+            "acme/bravo": RepositoryMetadataPayload(
+                readme="Bravo repo.",
+                topics=("bravo",),
+                pushed_at="2026-03-01T00:00:00Z",
+            ),
+            "acme/charlie": RepositoryMetadataPayload(
+                readme="Charlie repo.",
+                topics=("charlie",),
+                pushed_at="2026-03-01T00:00:00Z",
+            ),
         }
-        return payloads[repo_full_name]
+        if payloads:
+            default_payloads.update(payloads)
+        self.payloads = default_payloads
+
+    def fetch(self, repo_full_name: str):
+        return self.payloads[repo_full_name]
 
 
 class StubRepositoryAnalysisService:
@@ -124,7 +146,12 @@ class StubRepositoryAnalysisService:
         )
 
 
-def make_layered_result(repo_full_name: str, *, repo_url: str = "https://github.com/acme/demo") -> RepositoryAnalysisResult:
+def make_layered_result(
+    repo_full_name: str,
+    *,
+    repo_url: str = "https://github.com/acme/demo",
+    discovered_skill_packages=(),
+) -> RepositoryAnalysisResult:
     return RepositoryAnalysisResult(
         repo_full_name=repo_full_name,
         repo_url=repo_url,
@@ -149,6 +176,7 @@ def make_layered_result(repo_full_name: str, *, repo_url: str = "https://github.
             ),
         ),
         analysis_limits=(),
+        discovered_skill_packages=discovered_skill_packages,
     )
 
 
@@ -157,22 +185,68 @@ def build_service(
     *,
     repository_analysis_service: RepositoryAnalysisService | StubRepositoryAnalysisService | None = None,
     collector: StubCollector | None = None,
+    metadata_fetcher: StubMetadataFetcher | None = None,
     repository_tmp_dir: Path | None = None,
     max_deep_analysis_repos: int | None = None,
+    skill_sync_service=None,
 ):
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     report_dir = tmp_path / "reports"
     run_dir = tmp_path / "runs"
     return OrchestrationService(
         collector=collector or StubCollector(),
-        metadata_fetcher=StubMetadataFetcher(),
+        metadata_fetcher=metadata_fetcher or StubMetadataFetcher(),
         artifact_service=ClassificationArtifactService(base_dir=run_dir),
         report_service=ReportService(database_url=database_url, report_dir=report_dir),
         repository_analysis_service=repository_analysis_service,
         repository_tmp_dir=repository_tmp_dir,
         max_deep_analysis_repos=max_deep_analysis_repos,
+        skill_sync_service=skill_sync_service,
         database_url=database_url,
     )
+
+
+class StubSkillSyncService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[date, tuple[SkillSyncCandidate, ...]]] = []
+
+    def sync(
+        self,
+        *,
+        report_date: date,
+        candidates,
+        inventory=None,
+    ) -> SkillSyncResult:
+        del inventory
+        normalized = tuple(candidates)
+        self.calls.append((report_date, normalized))
+        return SkillSyncResult(
+            report_date=report_date,
+            summary={
+                "config_ready": True,
+                "candidate_count": len(normalized),
+                "action_count": 1,
+                "aligned_existing": 1,
+                "installed_new": 0,
+                "discarded_non_integrable": 0,
+                "blocked_audit_failure": 0,
+                "blocked_ambiguous_match": 0,
+                "rolled_back_install_failure": 0,
+            },
+            actions=(
+                SkillSyncAction(
+                    action="aligned_existing",
+                    slug="browser-bot",
+                    display_name="browser-bot",
+                    source_repo_full_name="acme/browser-bot",
+                    repo_url="https://github.com/acme/browser-bot",
+                    relative_root=".",
+                    files=("SKILL.md",),
+                    matched_installed_slug="browser-bot",
+                    matched_installed_path=str(Path("managed") / "browser-bot"),
+                ),
+            ),
+        )
 
 
 class BudgetCollector:
@@ -443,7 +517,7 @@ def test_repository_analysis_service_cleans_up_partial_clone_when_clone_fails_af
     assert result.analysis_completed is False
 
 
-def test_build_classification_input_marks_over_budget_repositories_as_fallback(tmp_path) -> None:
+def test_build_classification_input_batches_all_repositories_under_batch_size(tmp_path) -> None:
     results_by_repo = {
         "acme/alpha": make_layered_result("acme/alpha", repo_url="https://github.com/acme/alpha"),
         "acme/bravo": make_layered_result("acme/bravo", repo_url="https://github.com/acme/bravo"),
@@ -460,17 +534,17 @@ def test_build_classification_input_marks_over_budget_repositories_as_fallback(t
     result = service.build_classification_input(date(2026, 3, 20))
     payload = json.loads(result.classification_input_path.read_text(encoding="utf-8"))
 
-    assert result.deep_analyzed_repos == 1
-    assert result.fallback_repos == 2
-    assert result.skipped_due_to_budget == 2
+    assert result.deep_analyzed_repos == 3
+    assert result.fallback_repos == 0
+    assert result.skipped_due_to_budget == 0
+    assert result.cached_reused_repos == 0
     assert analysis_service.calls == [
         ("acme/alpha", True),
-        ("acme/bravo", False),
-        ("acme/charlie", False),
+        ("acme/bravo", True),
+        ("acme/charlie", True),
     ]
-    fallback_items = [item for item in payload["items"] if item["analysis_depth"] == "fallback"]
-    assert len(fallback_items) == 2
-    assert all("skipped due to deep-analysis budget" in item["analysis_limits"] for item in fallback_items)
+    assert all(item["analysis_depth"] == "layered" for item in payload["items"])
+    assert all(item["analysis_source"] == "fresh" for item in payload["items"])
 
 
 def test_build_classification_input_clears_partial_snapshots_on_mid_stage_failure(tmp_path) -> None:
@@ -584,10 +658,97 @@ def test_ingest_classification_output_uses_repo_analysis_snapshots_for_final_cou
 
     result = service.ingest_classification_output(date(2026, 3, 20), output_path)
 
-    assert result.deep_analyzed_repos == 1
-    assert result.fallback_repos == 2
-    assert result.skipped_due_to_budget == 2
+    assert result.deep_analyzed_repos == 3
+    assert result.fallback_repos == 0
+    assert result.skipped_due_to_budget == 0
+    assert result.cached_reused_repos == 0
     assert result.cleanup_warnings == 0
+
+
+def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_advances_by_90_days(tmp_path) -> None:
+    from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
+    from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
+
+    package_root = tmp_path / "source"
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=package_root,
+            relative_root=".",
+            files=("SKILL.md",),
+        ),
+        DiscoveredSkillPackage(
+            skill_name="browser",
+            package_root=package_root / "skills" / "browser",
+            relative_root="skills/browser",
+            files=("SKILL.md", "skill_runner.py"),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/alpha": make_layered_result(
+                "acme/alpha",
+                repo_url="https://github.com/acme/alpha",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    collector = MutableCollector(["acme/alpha"])
+    metadata_fetcher = StubMetadataFetcher(
+        {
+            "acme/alpha": RepositoryMetadataPayload(
+                readme="Alpha repo.",
+                topics=("alpha",),
+                pushed_at="2025-12-01T00:00:00Z",
+            )
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=collector,
+        metadata_fetcher=metadata_fetcher,
+        repository_analysis_service=analysis_service,
+        max_deep_analysis_repos=1,
+    )
+
+    first = service.build_classification_input(date(2026, 3, 20))
+    first_payload = json.loads(first.classification_input_path.read_text(encoding="utf-8"))
+    assert first.deep_analyzed_repos == 1
+    assert first.cached_reused_repos == 0
+    assert analysis_service.calls == [("acme/alpha", True)]
+
+    analysis_service.calls.clear()
+    second = service.build_classification_input(date(2026, 3, 21))
+    second_payload = json.loads(second.classification_input_path.read_text(encoding="utf-8"))
+    assert second.deep_analyzed_repos == 1
+    assert second.cached_reused_repos == 1
+    assert analysis_service.calls == []
+    assert first_payload["items"][0]["discovered_skill_packages"] == [
+        {
+            "skill_name": "browser-bot",
+            "relative_root": ".",
+            "files": ["SKILL.md"],
+        },
+        {
+            "skill_name": "browser",
+            "relative_root": "skills/browser",
+            "files": ["SKILL.md", "skill_runner.py"],
+        },
+    ]
+    assert second_payload["items"][0]["discovered_skill_packages"] == first_payload["items"][0]["discovered_skill_packages"]
+    assert second_payload["items"][0]["analysis_source"] == "cache"
+
+    metadata_fetcher.payloads["acme/alpha"] = RepositoryMetadataPayload(
+        readme="Alpha repo refreshed.",
+        topics=("alpha",),
+        pushed_at="2026-03-05T00:00:00Z",
+    )
+    third = service.build_classification_input(date(2026, 3, 22))
+    third_payload = json.loads(third.classification_input_path.read_text(encoding="utf-8"))
+    assert third.deep_analyzed_repos == 1
+    assert third.cached_reused_repos == 0
+    assert analysis_service.calls == [("acme/alpha", True)]
+    assert third_payload["items"][0]["analysis_source"] == "fresh"
 
 
 def test_build_classification_input_reconciles_repo_analysis_snapshots_for_same_date_rerun(tmp_path) -> None:
@@ -754,7 +915,413 @@ def test_ingest_classification_output_auto_configures_registry_and_generates_rep
     assert "workflow_orchestration" in capabilities
 
     content = result.markdown_report_path.read_text(encoding="utf-8")
-    assert "## 仓库快照" in content
-    assert "今日仓库（2）：`acme/browser-bot`, `acme/extractor`" in content
-    assert "## 需要人工关注" in content
-    assert "榜单周期：`每日、每周`" in content or "榜单周期：`每月`" in content
+    assert "## 总览" in content
+    assert "仓库变化：今日 2 个｜新增 2 个｜移除 0 个" in content
+    assert "## 今日重点" in content
+    assert "### 浏览器自动化 (`browser_automation`)" in content
+    assert "### 数据提取 (`data_extraction`)" in content
+
+
+def test_ingest_classification_output_removes_withdrawn_repo_capabilities_on_same_day_rerun(tmp_path) -> None:
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result("acme/browser-bot", repo_url="https://github.com/acme/browser-bot"),
+            "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
+        }
+    )
+    service = build_service(tmp_path, repository_analysis_service=analysis_service)
+    staged = service.build_classification_input(date(2026, 3, 20))
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/browser-bot",
+                    "capabilities": [
+                        {
+                            "capability_id": "browser_automation",
+                            "confidence": 0.93,
+                            "reason": "The repo centers on browser workflows.",
+                            "summary": "Automates browser workflows for websites.",
+                            "needs_review": False,
+                            "source_label": "codex",
+                        }
+                    ],
+                },
+                {
+                    "repo_full_name": "acme/extractor",
+                    "capabilities": [],
+                },
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/browser-bot",
+                    "capabilities": [],
+                },
+                {
+                    "repo_full_name": "acme/extractor",
+                    "capabilities": [],
+                },
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result = service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    with get_connection(f"sqlite:///{tmp_path / 'app.db'}") as connection:
+        withdrawn_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM repo_capabilities
+            WHERE snapshot_date = ?
+              AND repo_full_name = ?
+              AND capability_id = ?
+            """,
+            ("2026-03-20", "acme/browser-bot", "browser_automation"),
+        ).fetchone()[0]
+    report_payload = json.loads(result.json_report_path.read_text(encoding="utf-8"))
+
+    assert withdrawn_count == 0
+    assert report_payload["summary"]["total_capabilities"] == 0
+
+
+def test_ingest_classification_output_auto_promotes_low_risk_enhancement_candidates(tmp_path) -> None:
+    class SummaryCollector:
+        def fetch_trending(self, period: str) -> list[TrendingRepo]:
+            return [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period=period,
+                    rank=1,
+                    repo_full_name="acme/summary-skill",
+                    repo_url="https://github.com/acme/summary-skill",
+                    description="Summarizes multi-source research into concise briefs.",
+                    language="Python",
+                    stars=50,
+                    forks=5,
+                )
+            ]
+
+    from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
+
+    metadata_fetcher = StubMetadataFetcher(
+        {
+            "acme/summary-skill": RepositoryMetadataPayload(
+                readme="This repository researches recent topics and produces grounded summaries.",
+                topics=("summary", "research"),
+                pushed_at="2026-03-01T00:00:00Z",
+            )
+        }
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/summary-skill": RepositoryAnalysisResult(
+                repo_full_name="acme/summary-skill",
+                repo_url="https://github.com/acme/summary-skill",
+                analysis_depth="layered",
+                clone_strategy="shallow-clone",
+                clone_started=True,
+                analysis_completed=True,
+                cleanup_attempted=True,
+                cleanup_required=True,
+                cleanup_completed=True,
+                fallback_used=False,
+                root_files=("README.md", "SKILL.md"),
+                matched_files=("README.md", "SKILL.md", "main.py"),
+                matched_keywords=("README*", "*.md", "skill*", "main*"),
+                architecture_signals=("documentation-first", "skill-centric", "entrypoint-driven"),
+                probe_summary="Layered analysis complete.",
+                evidence_snippets=(
+                    AnalysisEvidenceSnippet(
+                        path="README.md",
+                        excerpt="Produces grounded summaries from multi-source research.",
+                        why_it_matters="Summarization is the core user-facing behavior.",
+                    ),
+                ),
+                analysis_limits=(),
+            )
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=SummaryCollector(),
+        metadata_fetcher=metadata_fetcher,
+        repository_analysis_service=analysis_service,
+    )
+    staged = service.build_classification_input(date(2026, 3, 20))
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/summary-skill",
+                    "capabilities": [
+                        {
+                            "capability_id": "summarization",
+                            "confidence": 0.86,
+                            "reason": "The repository researches multiple sources and condenses them into grounded summaries.",
+                            "summary": "Produces concise grounded summaries from multi-source research.",
+                            "needs_review": False,
+                            "source_label": "codex",
+                        }
+                    ],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    repository = CapabilityRegistryRepository(database_url=f"sqlite:///{tmp_path / 'app.db'}")
+    capability = repository.get_capability("summarization")
+    audit_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "capability-audit.json").read_text(encoding="utf-8"))
+    report_payload = json.loads(result.json_report_path.read_text(encoding="utf-8"))
+
+    assert capability is not None
+    assert capability.status is CapabilityStatus.ACTIVE
+    assert audit_payload["auto_promoted"][0]["capability_id"] == "summarization"
+    assert audit_payload["manual_attention"] == []
+    assert report_payload["summary"]["enhancement_candidates"] == 0
+    assert report_payload["summary"]["covered"] == 1
+
+
+def test_ingest_classification_output_writes_skill_sync_report_and_exposes_sync_payload(tmp_path) -> None:
+    from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
+
+    class SingleRepoCollector:
+        def fetch_trending(self, period: str) -> list[TrendingRepo]:
+            return [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period=period,
+                    rank=1,
+                    repo_full_name="acme/browser-bot",
+                    repo_url="https://github.com/acme/browser-bot",
+                    description="Browser automation agent for websites.",
+                    language="Python",
+                    stars=100,
+                    forks=10,
+                )
+            ]
+
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=tmp_path / "source",
+            relative_root=".",
+            files=("SKILL.md",),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    skill_sync_service = StubSkillSyncService()
+    service = build_service(
+        tmp_path,
+        collector=SingleRepoCollector(),
+        repository_analysis_service=analysis_service,
+        skill_sync_service=skill_sync_service,
+    )
+    staged = service.build_classification_input(date(2026, 3, 20))
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/browser-bot",
+                    "capabilities": [
+                        {
+                            "capability_id": "browser_automation",
+                            "confidence": 0.93,
+                            "reason": "The repo centers on browser workflow automation.",
+                            "summary": "Automates browser workflows for websites.",
+                            "needs_review": False,
+                            "source_label": "codex",
+                        }
+                    ],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_classification_output(date(2026, 3, 20), output_path)
+    report_payload = json.loads(result.json_report_path.read_text(encoding="utf-8"))
+    sync_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "skill-sync-report.json").read_text(encoding="utf-8"))
+
+    assert skill_sync_service.calls
+    assert skill_sync_service.calls[0][1][0].slug == "browser-bot"
+    assert skill_sync_service.calls[0][1][0].capability_ids == ("browser_automation",)
+    assert result.skill_sync_summary["aligned_existing"] == 1
+    assert result.skill_sync_actions[0]["action"] == "aligned_existing"
+    assert sync_payload["summary"]["aligned_existing"] == 1
+    assert report_payload["skill_sync_summary"]["aligned_existing"] == 1
+    assert report_payload["skill_sync_actions"][0]["action"] == "aligned_existing"
+
+
+def test_ingest_classification_output_writes_taxonomy_gap_candidates_for_unclassified_repositories(tmp_path) -> None:
+    class GapCollector:
+        def fetch_trending(self, period: str) -> list[TrendingRepo]:
+            fixtures = [
+                (
+                    "acme/money-printer",
+                    "Automates the generation of short-form videos and social posts.",
+                ),
+                (
+                    "acme/context-vault",
+                    "Stores and serves agent memory, context, and resources.",
+                ),
+                (
+                    "acme/security-scanner",
+                    "Scans repositories for vulnerabilities, secrets, and misconfigurations.",
+                ),
+            ]
+            return [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period=period,
+                    rank=index + 1,
+                    repo_full_name=repo_full_name,
+                    repo_url=f"https://github.com/{repo_full_name}",
+                    description=description,
+                    language="Python",
+                    stars=30 - index,
+                    forks=3 - index,
+                )
+                for index, (repo_full_name, description) in enumerate(fixtures)
+            ]
+
+    from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
+
+    metadata_fetcher = StubMetadataFetcher(
+        {
+            "acme/money-printer": RepositoryMetadataPayload(
+                readme="Creates videos, tweets, and outreach content automatically.",
+                topics=("video", "youtube", "twitter"),
+                pushed_at="2026-03-01T00:00:00Z",
+            ),
+            "acme/context-vault": RepositoryMetadataPayload(
+                readme="A context and memory database for AI agents.",
+                topics=("memory", "context"),
+                pushed_at="2026-03-01T00:00:00Z",
+            ),
+            "acme/security-scanner": RepositoryMetadataPayload(
+                readme="Finds vulnerabilities, secrets, and SBOM issues in source code.",
+                topics=("security", "vulnerability"),
+                pushed_at="2026-03-01T00:00:00Z",
+            ),
+        }
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/money-printer": RepositoryAnalysisResult(
+                repo_full_name="acme/money-printer",
+                repo_url="https://github.com/acme/money-printer",
+                analysis_depth="layered",
+                clone_strategy="shallow-clone",
+                clone_started=True,
+                analysis_completed=True,
+                cleanup_attempted=True,
+                cleanup_required=True,
+                cleanup_completed=True,
+                fallback_used=False,
+                root_files=("README.md",),
+                matched_files=("README.md", "main.py", "docs/YouTube.md"),
+                matched_keywords=("README*", "*.md", "main*", "docs/**/*.md"),
+                architecture_signals=("documentation-first", "entrypoint-driven"),
+                probe_summary="Layered analysis complete.",
+                evidence_snippets=(),
+                analysis_limits=(),
+            ),
+            "acme/context-vault": RepositoryAnalysisResult(
+                repo_full_name="acme/context-vault",
+                repo_url="https://github.com/acme/context-vault",
+                analysis_depth="layered",
+                clone_strategy="shallow-clone",
+                clone_started=True,
+                analysis_completed=True,
+                cleanup_attempted=True,
+                cleanup_required=True,
+                cleanup_completed=True,
+                fallback_used=False,
+                root_files=("README.md",),
+                matched_files=("README.md", "server.py", "memory.py"),
+                matched_keywords=("README*", "server*", "main*", "app*"),
+                architecture_signals=("documentation-first", "entrypoint-driven"),
+                probe_summary="Layered analysis complete.",
+                evidence_snippets=(),
+                analysis_limits=(),
+            ),
+            "acme/security-scanner": RepositoryAnalysisResult(
+                repo_full_name="acme/security-scanner",
+                repo_url="https://github.com/acme/security-scanner",
+                analysis_depth="layered",
+                clone_strategy="shallow-clone",
+                clone_started=True,
+                analysis_completed=True,
+                cleanup_attempted=True,
+                cleanup_required=True,
+                cleanup_completed=True,
+                fallback_used=False,
+                root_files=("README.md",),
+                matched_files=("README.md", "cli.py", "scanner.py"),
+                matched_keywords=("README*", "cli*", "main*", "server*"),
+                architecture_signals=("documentation-first", "entrypoint-driven"),
+                probe_summary="Layered analysis complete.",
+                evidence_snippets=(),
+                analysis_limits=(),
+            ),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=GapCollector(),
+        metadata_fetcher=metadata_fetcher,
+        repository_analysis_service=analysis_service,
+    )
+    staged = service.build_classification_input(date(2026, 3, 20))
+    output_path = staged.classification_input_path.with_name("classification-output.json")
+    output_path.write_text(
+        json.dumps(
+            [
+                {"repo_full_name": "acme/money-printer", "capabilities": []},
+                {"repo_full_name": "acme/context-vault", "capabilities": []},
+                {"repo_full_name": "acme/security-scanner", "capabilities": []},
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service.ingest_classification_output(date(2026, 3, 20), output_path)
+
+    gap_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "taxonomy-gap-candidates.json").read_text(encoding="utf-8"))
+    candidate_ids = {item["candidate_id"] for item in gap_payload["candidates"]}
+
+    assert "content_generation" in candidate_ids
+    assert "memory_context_management" in candidate_ids
+    assert "security_analysis" in candidate_ids

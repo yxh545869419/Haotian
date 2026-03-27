@@ -11,6 +11,8 @@ from haotian.services.repository_probe_service import RepositoryProbeResult
 from haotian.services.repository_probe_service import RepositoryProbeService
 from haotian.services.repository_workspace_service import ClonedWorkspace
 from haotian.services.repository_workspace_service import RepositoryWorkspaceService
+from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
+from haotian.services.repository_skill_package_service import RepositorySkillPackageService
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,9 +34,12 @@ class RepositoryAnalysisResult:
     probe_summary: str
     evidence_snippets: tuple[EvidenceSnippet, ...]
     analysis_limits: tuple[str, ...]
+    discovered_skill_packages: tuple[DiscoveredSkillPackage, ...] = ()
+    analysis_source: str = "fresh"
 
     def to_classification_input_fields(self) -> dict[str, object]:
         return {
+            "analysis_source": self.analysis_source,
             "analysis_depth": self.analysis_depth,
             "clone_strategy": self.clone_strategy,
             "clone_started": self.clone_started,
@@ -57,6 +62,10 @@ class RepositoryAnalysisResult:
                 for snippet in self.evidence_snippets
             ],
             "analysis_limits": list(self.analysis_limits),
+            "discovered_skill_packages": [
+                package.to_serialized_payload()
+                for package in self.discovered_skill_packages
+            ],
         }
 
     def to_snapshot_row(self, snapshot_date: str) -> dict[str, object]:
@@ -64,6 +73,7 @@ class RepositoryAnalysisResult:
             "snapshot_date": snapshot_date,
             "repo_full_name": self.repo_full_name,
             "repo_url": self.repo_url,
+            "analysis_source": self.analysis_source,
             "analysis_depth": self.analysis_depth,
             "clone_strategy": self.clone_strategy,
             "clone_started": int(self.clone_started),
@@ -86,6 +96,10 @@ class RepositoryAnalysisResult:
                 for snippet in self.evidence_snippets
             ],
             "analysis_limits": [*self.analysis_limits],
+            "discovered_skill_packages": [
+                package.to_serialized_payload()
+                for package in self.discovered_skill_packages
+            ],
         }
 
 
@@ -103,6 +117,7 @@ class RepositoryAnalysisService:
         self.run_label = run_label
         self.workspace_service = workspace_service or RepositoryWorkspaceService(run_label=run_label, base_dir=base_dir)
         self.probe_service = probe_service or RepositoryProbeService()
+        self.skill_package_service = RepositorySkillPackageService()
 
     def analyze_repository(
         self,
@@ -122,6 +137,7 @@ class RepositoryAnalysisService:
         cleanup_completed = False
         analysis_completed = False
         probe_result: RepositoryProbeResult | None = None
+        discovered_skill_packages: tuple[DiscoveredSkillPackage, ...] = ()
         analysis_limits: list[str] = []
         failure_reason = ""
 
@@ -131,6 +147,7 @@ class RepositoryAnalysisService:
             clone_started = True
             cleanup_required = True
             self._remove_git_metadata(workspace.path)
+            discovered_skill_packages = self.skill_package_service.discover(workspace.path)
             probe_result = self.probe_service.probe(workspace.path)
             analysis_completed = True
         except Exception as exc:  # noqa: BLE001
@@ -160,6 +177,7 @@ class RepositoryAnalysisService:
                 cleanup_required=cleanup_required,
                 cleanup_completed=cleanup_completed,
                 analysis_limits=analysis_limits,
+                discovered_skill_packages=discovered_skill_packages,
             )
 
         return self._build_fallback_from_failure(
@@ -172,6 +190,7 @@ class RepositoryAnalysisService:
             cleanup_completed=cleanup_completed,
             analysis_completed=analysis_completed,
             analysis_limits=analysis_limits,
+            discovered_skill_packages=discovered_skill_packages,
         )
 
     def _build_success_result(
@@ -186,6 +205,7 @@ class RepositoryAnalysisService:
         cleanup_required: bool,
         cleanup_completed: bool,
         analysis_limits: list[str],
+        discovered_skill_packages: tuple[DiscoveredSkillPackage, ...],
     ) -> RepositoryAnalysisResult:
         combined_limits = [*probe_result.analysis_limits, *analysis_limits]
         return RepositoryAnalysisResult(
@@ -206,9 +226,17 @@ class RepositoryAnalysisService:
             probe_summary=probe_result.probe_summary,
             evidence_snippets=probe_result.evidence_snippets,
             analysis_limits=tuple(dict.fromkeys(combined_limits)),
+            discovered_skill_packages=discovered_skill_packages,
+            analysis_source="fresh",
         )
 
-    def _build_budget_fallback(self, *, repo_full_name: str, repo_url: str) -> RepositoryAnalysisResult:
+    def _build_budget_fallback(
+        self,
+        *,
+        repo_full_name: str,
+        repo_url: str,
+        discovered_skill_packages: tuple[DiscoveredSkillPackage, ...] = (),
+    ) -> RepositoryAnalysisResult:
         return RepositoryAnalysisResult(
             repo_full_name=repo_full_name,
             repo_url=repo_url,
@@ -227,6 +255,8 @@ class RepositoryAnalysisService:
             probe_summary="Deep analysis skipped because the repository budget was exhausted.",
             evidence_snippets=(),
             analysis_limits=("skipped due to deep-analysis budget",),
+            discovered_skill_packages=discovered_skill_packages,
+            analysis_source="fallback",
         )
 
     def _build_fallback_from_failure(
@@ -241,6 +271,7 @@ class RepositoryAnalysisService:
         cleanup_completed: bool,
         analysis_completed: bool,
         analysis_limits: list[str],
+        discovered_skill_packages: tuple[DiscoveredSkillPackage, ...],
     ) -> RepositoryAnalysisResult:
         combined_limits = [reason, *analysis_limits]
         clone_strategy = "clone-failed" if not clone_started else "probe-failed"
@@ -262,6 +293,8 @@ class RepositoryAnalysisService:
             probe_summary=f"Fallback analysis used because {reason}.",
             evidence_snippets=(),
             analysis_limits=tuple(dict.fromkeys(combined_limits)),
+            discovered_skill_packages=discovered_skill_packages,
+            analysis_source="fallback",
         )
 
     @staticmethod

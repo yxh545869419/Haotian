@@ -9,6 +9,15 @@ from typing import Any
 
 from haotian.analyzers.capability_normalizer import CapabilityNormalizer
 
+SKILL_SYNC_ACTIONS = (
+    "aligned_existing",
+    "installed_new",
+    "discarded_non_integrable",
+    "blocked_audit_failure",
+    "blocked_ambiguous_match",
+    "rolled_back_install_failure",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ClassifiedCapabilityRecord:
@@ -67,6 +76,35 @@ class ClassificationArtifactService:
     def skill_sync_report_path(self, report_date: str) -> Path:
         return self.run_dir(report_date) / "skill-sync-report.json"
 
+    @staticmethod
+    def default_skill_sync_summary(
+        *,
+        config_ready: bool = False,
+        candidate_count: int = 0,
+        action_count: int = 0,
+    ) -> dict[str, object]:
+        summary: dict[str, object] = {
+            "config_ready": config_ready,
+            "candidate_count": candidate_count,
+            "action_count": action_count,
+        }
+        for action in SKILL_SYNC_ACTIONS:
+            summary[action] = 0
+        return summary
+
+    @classmethod
+    def empty_skill_sync_report_payload(
+        cls,
+        report_date: str,
+        *,
+        config_ready: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "report_date": report_date,
+            "summary": cls.default_skill_sync_summary(config_ready=config_ready),
+            "actions": [],
+        }
     def write_classification_input(self, *, report_date: str, items: list[dict[str, object]]) -> Path:
         target = self.classification_input_path(report_date)
         payload = {

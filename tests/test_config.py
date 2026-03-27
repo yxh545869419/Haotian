@@ -124,3 +124,24 @@ def test_get_settings_normalizes_relative_artifact_paths_against_load_cwd(monkey
         assert settings.run_dir == (first_cwd / "runs").resolve()
     finally:
         get_settings.cache_clear()
+
+
+def test_docs_mention_skill_sync_report_and_skill_sync_configuration() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+    ops_doc = Path("docs/ops.md").read_text(encoding="utf-8")
+    architecture_doc = Path("docs/architecture.md").read_text(encoding="utf-8")
+
+    assert "skill-sync-report.json" in readme
+    assert "CODEX_SKILL_ROOTS" in env_example
+    assert "CODEX_MANAGED_SKILL_ROOT" in env_example
+    assert "SKILL_AUDIT_SCRIPT" in env_example
+    assert "如果要真正安装新的 Haotian-managed skill，至少需要：" in ops_doc
+    assert "- `CODEX_MANAGED_SKILL_ROOT`" in ops_doc
+    assert "- `SKILL_AUDIT_SCRIPT`" in ops_doc
+    assert (
+        "其中 `CODEX_SKILL_ROOTS` 可选；它主要用于扫描和对齐当前机器上已经安装的 skill，不配置时仍然可以把新的审计通过 skill 安装到 `CODEX_MANAGED_SKILL_ROOT`。"
+        in ops_doc
+    )
+    assert "capability-audit.json" in architecture_doc
+    assert "taxonomy-gap-candidates.json" in architecture_doc

@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 class RepositoryMetadataPayload:
     readme: str | None = None
     topics: tuple[str, ...] = ()
+    pushed_at: str | None = None
 
 
 class GithubRepositoryMetadataFetcher:
@@ -22,9 +23,11 @@ class GithubRepositoryMetadataFetcher:
 
     @lru_cache(maxsize=256)
     def fetch(self, repo_full_name: str) -> RepositoryMetadataPayload:
+        repo_payload = self._fetch_repo_payload(repo_full_name)
         return RepositoryMetadataPayload(
             readme=self._fetch_readme(repo_full_name),
-            topics=self._fetch_topics(repo_full_name),
+            topics=self._extract_topics(repo_payload),
+            pushed_at=self._extract_pushed_at(repo_payload),
         )
 
     def _fetch_readme(self, repo_full_name: str) -> str | None:
@@ -41,7 +44,7 @@ class GithubRepositoryMetadataFetcher:
         except (HTTPError, URLError):
             return None
 
-    def _fetch_topics(self, repo_full_name: str) -> tuple[str, ...]:
+    def _fetch_repo_payload(self, repo_full_name: str) -> dict[str, object]:
         request = Request(
             f"{self.api_base_url}/repos/{repo_full_name}",
             headers={
@@ -53,8 +56,21 @@ class GithubRepositoryMetadataFetcher:
             with urlopen(request, timeout=15) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, json.JSONDecodeError):
-            return ()
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return payload
+
+    @staticmethod
+    def _extract_topics(payload: dict[str, object]) -> tuple[str, ...]:
         topics = payload.get("topics", [])
         if not isinstance(topics, list):
             return ()
         return tuple(str(item) for item in topics if isinstance(item, str))
+
+    @staticmethod
+    def _extract_pushed_at(payload: dict[str, object]) -> str | None:
+        pushed_at = payload.get("pushed_at")
+        if not isinstance(pushed_at, str) or not pushed_at.strip():
+            return None
+        return pushed_at.strip()

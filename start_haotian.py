@@ -31,7 +31,20 @@ def _load_runner():
     return run_once
 
 
+def _configure_console_streams() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
+
 def main() -> None:
+    _configure_console_streams()
     parser = argparse.ArgumentParser(description="Run one Haotian skill workflow cycle.")
     parser.add_argument("--date", default=None, help="Optional report date (YYYY-MM-DD).")
     args = parser.parse_args()

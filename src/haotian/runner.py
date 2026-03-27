@@ -77,6 +77,9 @@ def _build_prepare_summary(result: ClassificationInputBuildResult, output_path: 
         "cleanup_warnings": result.cleanup_warnings,
         "classification_input": str(result.classification_input_path) if result.classification_input_path else None,
         "classification_output": str(output_path),
+        "skill_sync_report": None,
+        "skill_sync_summary": ClassificationArtifactService.empty_skill_sync_report_payload(result.report_date.isoformat())["summary"],
+        "skill_sync_actions": [],
         "stage_errors": result.stage_errors,
         "next_action": (
             "Read docs/capability-taxonomy.md, write classification-output.json beside the staged input, "
@@ -114,11 +117,9 @@ def _build_finalize_summary(
         "taxonomy_gap_candidates_report": (
             str(result.taxonomy_gap_candidates_path) if result.taxonomy_gap_candidates_path else None
         ),
-        "skill_sync_report": (
-            str(skill_sync_report_path)
-            if (skill_sync_report_path := artifact_service.skill_sync_report_path(result.report_date.isoformat())).exists()
-            else None
-        ),
+        "skill_sync_report": str(result.skill_sync_report_path) if result.skill_sync_report_path else None,
+        "skill_sync_summary": result.skill_sync_summary or ClassificationArtifactService.default_skill_sync_summary(),
+        "skill_sync_actions": result.skill_sync_actions,
         "auto_promoted_capabilities": result.auto_promoted_capabilities,
         "risky_enhancement_candidates": result.risky_enhancement_candidates,
         "manual_attention_items": result.manual_attention_items,

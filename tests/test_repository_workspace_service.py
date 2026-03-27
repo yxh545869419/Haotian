@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import haotian.services.repository_workspace_service as repository_workspace_module
 from haotian.config import get_settings
 from haotian.services.repository_workspace_service import ClonedWorkspace
 from haotian.services.repository_workspace_service import RepositoryWorkspaceService
@@ -99,6 +100,31 @@ def test_workspace_cleanup_deletes_cloned_directory(tmp_path) -> None:
     service.cleanup_repo(workspace)
 
     assert not workspace.path.exists()
+
+
+def test_workspace_cleanup_retries_transient_permission_error_then_succeeds(tmp_path, monkeypatch) -> None:
+    source = init_local_git_repo(tmp_path / "source")
+    service = RepositoryWorkspaceService(run_label="2026-03-24", base_dir=tmp_path / "tmp-repos")
+
+    workspace = service.clone_repo(repo_full_name="acme/demo", repo_url=str(source))
+    original_rmtree = repository_workspace_module.shutil.rmtree
+    attempts: list[Path] = []
+    sleeps: list[float] = []
+
+    def flaky_rmtree(path, *args, **kwargs):  # noqa: ANN001, ANN002
+        attempts.append(Path(path))
+        if len(attempts) < 3:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(repository_workspace_module.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(repository_workspace_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    service.cleanup_repo(workspace)
+
+    assert not workspace.path.exists()
+    assert len(attempts) == 3
+    assert sleeps
 
 
 def test_clone_repo_retries_over_stale_workspace_without_cleanup(tmp_path) -> None:

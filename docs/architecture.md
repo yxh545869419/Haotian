@@ -68,9 +68,22 @@ Haotian 的当前形态是一个 skill-first 仓库：
 - 第一阶段：收集数据并生成待分类工件
 - 第二阶段前：执行仓库分析快照并把证据写入本地运行产物
 - 第二阶段：读取 Codex 输出，写回数据库
-- 调用 diff 与 report 服务生成最终结果
+- 调用 capability audit、skill sync 与 report 服务生成最终结果
 
-### 6. Reports
+### 6. Local skill inventory and sync
+
+- `src/haotian/services/codex_skill_inventory_service.py`
+- `src/haotian/services/skill_audit_service.py`
+- `src/haotian/services/skill_sync_service.py`
+
+职责：
+
+- 扫描 `CODEX_SKILL_ROOTS` 中现有的本机 skill
+- 对 Haotian 发现的 skill package 候选做确定性的 managed-wrapper 对齐或安装
+- 在安装前调用 `SKILL_AUDIT_SCRIPT` 做审计
+- 输出 `skill-sync-report.json`、`skill_sync_summary` 和 `skill_sync_actions`
+
+### 7. Reports
 
 - `src/haotian/services/report_service.py`
 
@@ -79,8 +92,9 @@ Haotian 的当前形态是一个 skill-first 仓库：
 - 生成 `data/reports/YYYY-MM-DD.md`
 - 生成 `data/reports/YYYY-MM-DD.json`
 - 把分析深度、命中文件和证据摘录渲染成 evidence-backed sections
+- 把 taxonomy gap 与 skill sync 结果暴露成稳定的机器可读字段
 
-### 7. Runner / Entrypoints
+### 8. Runner / Entrypoints
 
 - `src/haotian/runner.py`
 - `src/haotian/main.py`
@@ -116,13 +130,14 @@ Haotian 的当前形态是一个 skill-first 仓库：
 2. Python 校验 `classification-output.json`
 3. Python 写入 `repo_capabilities`
 4. Python 更新 `capability_registry`
-5. Python 生成带证据摘录的 Markdown / JSON 报告
+5. Python 自动执行 capability audit、taxonomy gap 汇总和 skill sync
+6. Python 生成带证据摘录的 Markdown / JSON 报告
 
 ## 目录与产物
 
 ```text
 data/
-├── app.db
+├── haotian.db
 ├── reports/
 │   ├── YYYY-MM-DD.md
 │   └── YYYY-MM-DD.json
@@ -130,6 +145,9 @@ data/
     └── YYYY-MM-DD/
         ├── classification-input.json
         ├── classification-output.json
+        ├── capability-audit.json
+        ├── skill-sync-report.json
+        ├── taxonomy-gap-candidates.json
         └── run-summary.json
 ```
 

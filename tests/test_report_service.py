@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pytest
+
 from haotian.db.schema import get_connection, initialize_schema
 from haotian.registry.capability_registry import (
     CapabilityApproval,
@@ -159,7 +161,13 @@ def _write_taxonomy_gap_candidates(
         encoding="utf-8",
     )
 
-
+def _write_taxonomy_gap_candidates_payload(run_dir, *, report_date: str, payload) -> None:
+    run_path = run_dir / report_date
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("taxonomy-gap-candidates.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     initialize_schema(database_url)
@@ -313,6 +321,208 @@ def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
     assert payload["taxonomy_gap_summary"]["candidate_count"] == 2
     assert payload["taxonomy_gap_candidates"][0]["display_name"] == "内容生成 / 营销自动化"
     assert payload["executive_summary"]["taxonomy_gap_count"] == 2
+
+def test_report_payload_includes_skill_sync_summary_and_actions(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    run_path = run_dir / "2026-03-25"
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("skill-sync-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-25",
+                "summary": {
+                    "config_ready": True,
+                    "candidate_count": 1,
+                    "action_count": 1,
+                    "aligned_existing": 1,
+                    "installed_new": 0,
+                    "discarded_non_integrable": 0,
+                    "blocked_audit_failure": 0,
+                    "blocked_ambiguous_match": 0,
+                    "rolled_back_install_failure": 0,
+                },
+                "actions": [
+                    {
+                        "action": "aligned_existing",
+                        "slug": "browser-bot",
+                        "display_name": "browser-bot",
+                        "source_repo_full_name": "acme/browser-bot",
+                        "repo_url": "https://github.com/acme/browser-bot",
+                        "relative_root": ".",
+                        "files": ["SKILL.md"],
+                        "matched_installed_slug": "browser-bot",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = service._build_report_payload(
+        date(2026, 3, 25),
+        {
+            "summary": [],
+            "manual_attention": [],
+            "new_capabilities": [],
+            "enhancement_candidates": [],
+            "covered": [],
+            "risks": [],
+        },
+        {
+            "today": (),
+            "previous": (),
+            "new": (),
+            "dropped": (),
+        },
+    )
+
+    assert payload["skill_sync_summary"]["aligned_existing"] == 1
+    assert payload["skill_sync_actions"][0]["action"] == "aligned_existing"
+    assert payload["artifact_links"]["skill_sync_report"].endswith("skill-sync-report.json")
+
+
+@pytest.mark.parametrize(
+    ("payload", "description"),
+    [
+        ("not-json", "malformed json"),
+        (["unexpected-root"], "wrong root type"),
+    ],
+)
+def test_report_payload_treats_invalid_taxonomy_gap_file_as_empty(tmp_path, payload, description) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    if isinstance(payload, str):
+        run_path = run_dir / "2026-03-25"
+        run_path.mkdir(parents=True, exist_ok=True)
+        run_path.joinpath("taxonomy-gap-candidates.json").write_text(payload, encoding="utf-8")
+    else:
+        _write_taxonomy_gap_candidates_payload(run_dir, report_date="2026-03-25", payload=payload)
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": (),
+        "previous": (),
+        "new": (),
+        "dropped": (),
+    }
+
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    assert payload["taxonomy_gap_candidates"] == []
+    assert payload["taxonomy_gap_summary"]["candidate_count"] == 0
+    assert payload["executive_summary"]["taxonomy_gap_count"] == 0
+
+
+def test_report_payload_normalizes_taxonomy_gap_repo_count_from_repo_names(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    _write_taxonomy_gap_candidates_payload(
+        run_dir,
+        report_date="2026-03-25",
+        payload={
+            "schema_version": 1,
+            "report_date": "2026-03-25",
+            "candidates": [
+                {
+                    "candidate_id": "content_generation",
+                    "display_name": "内容生成 / 营销自动化",
+                    "reason": "仓库更像内容生产或营销自动化工具，当前 taxonomy 没有覆盖这一能力。",
+                    "repo_full_names": ["acme/money-printer", "acme/newsletter-bot"],
+                    "repo_count": 999,
+                }
+            ],
+        },
+    )
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": (),
+        "previous": (),
+        "new": (),
+        "dropped": (),
+    }
+
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    assert payload["taxonomy_gap_candidates"][0]["repo_count"] == 2
+    assert payload["taxonomy_gap_summary"]["repo_count"] == 2
+
+
+def test_report_payload_skips_bad_taxonomy_gap_candidate_entries(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    service = ReportService(database_url=database_url, report_dir=report_dir, run_dir=run_dir)
+
+    _write_taxonomy_gap_candidates_payload(
+        run_dir,
+        report_date="2026-03-25",
+        payload={
+            "schema_version": 1,
+            "report_date": "2026-03-25",
+            "candidates": [
+                "not-a-dict",
+                {
+                    "candidate_id": "broken_entry",
+                    "display_name": "坏条目",
+                    "reason": "This entry is malformed.",
+                    "repo_full_names": None,
+                    "repo_count": "invalid",
+                },
+            ],
+        },
+    )
+
+    sections = {
+        "summary": [],
+        "manual_attention": [],
+        "new_capabilities": [],
+        "enhancement_candidates": [],
+        "covered": [],
+        "risks": [],
+    }
+    repo_snapshot = {
+        "today": (),
+        "previous": (),
+        "new": (),
+        "dropped": (),
+    }
+
+    payload = service._build_report_payload(date(2026, 3, 25), sections, repo_snapshot)
+
+    assert payload["taxonomy_gap_candidates"] == []
+    assert payload["taxonomy_gap_summary"]["candidate_count"] == 0
 
 
 def test_markdown_renders_taxonomy_gap_section(tmp_path) -> None:
