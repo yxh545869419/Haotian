@@ -348,10 +348,7 @@ class SkillSyncService:
         for record in inventory_records:
             if not self._record_can_match_candidate(candidate, record):
                 continue
-            record_tokens = self._record_similarity_tokens(record)
-            if not record_tokens:
-                continue
-            score = self._token_set_jaccard(candidate_similarity_tokens, record_tokens)
+            score = self._similarity_score(candidate, candidate_similarity_tokens, record)
             if score >= 0.72:
                 scored.append((score, record))
         if not scored:
@@ -409,11 +406,11 @@ class SkillSyncService:
             return True
         record_repo = SkillSyncService._canonical_repo_identity(record.managed_source_repo_full_name)
         candidate_repo = SkillSyncService._canonical_repo_identity(candidate.source_repo_full_name)
-        if record_repo is not None and record_repo != candidate_repo:
+        if record_repo is None or candidate_repo is None or record_repo != candidate_repo:
             return False
         record_root = SkillSyncService._canonical_relative_root(record.managed_relative_root)
         candidate_root = SkillSyncService._canonical_relative_root(candidate.relative_root)
-        if record_root is not None and record_root != candidate_root:
+        if record_root is None or candidate_root is None or record_root != candidate_root:
             return False
         return True
 
@@ -437,8 +434,41 @@ class SkillSyncService:
         )
 
     @staticmethod
+    def _candidate_name_tokens(candidate: SkillSyncCandidate) -> set[str]:
+        return SkillSyncService._expanded_token_set(candidate.slug, candidate.display_name)
+
+    @staticmethod
+    def _record_similarity_name_tokens(record: InstalledSkillRecord) -> set[str]:
+        return SkillSyncService._expanded_token_set(
+            record.slug,
+            record.display_name,
+            *record.aliases,
+            record.managed_wrapper_slug or "",
+        )
+
+    @staticmethod
     def _record_similarity_tokens(record: InstalledSkillRecord) -> set[str]:
         return SkillSyncService._expanded_token_set(record.description)
+
+    @staticmethod
+    def _similarity_score(
+        candidate: SkillSyncCandidate,
+        candidate_evidence_tokens: set[str],
+        record: InstalledSkillRecord,
+    ) -> float:
+        name_score = SkillSyncService._token_set_jaccard(
+            SkillSyncService._candidate_name_tokens(candidate),
+            SkillSyncService._record_similarity_name_tokens(record),
+        )
+        description_score = SkillSyncService._token_set_jaccard(
+            SkillSyncService._expanded_token_set(candidate.description),
+            SkillSyncService._record_similarity_tokens(record),
+        )
+        evidence_score = SkillSyncService._token_set_jaccard(
+            candidate_evidence_tokens,
+            SkillSyncService._record_similarity_name_tokens(record) | SkillSyncService._record_similarity_tokens(record),
+        )
+        return (0.6 * name_score) + (0.25 * description_score) + (0.15 * evidence_score)
 
     @staticmethod
     def _expanded_token_set(*values: str) -> set[str]:
@@ -447,7 +477,6 @@ class SkillSyncService:
             normalized = SkillSyncService._normalized_token(value)
             if not normalized:
                 continue
-            tokens.add(normalized)
             tokens.update(part for part in normalized.split("-") if part)
         return tokens
 
