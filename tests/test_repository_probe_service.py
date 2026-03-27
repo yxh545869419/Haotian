@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from haotian.services.repository_probe_service import EvidenceSnippet
 from haotian.services.repository_probe_service import RepositoryProbeService
@@ -105,6 +109,56 @@ def test_probe_does_not_promote_root_agent_docs_to_skill_package_without_manifes
     assert "codex.md" not in result.matched_files
     assert "codex-skill-package" not in result.architecture_signals
     assert "skill-ecosystem" not in result.architecture_signals
+
+
+def test_probe_ignores_windows_junction_skill_evidence(tmp_path) -> None:
+    if os.name != "nt" or not hasattr(Path("x"), "is_junction"):
+        pytest.skip("Windows junctions are not available")
+
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "main.py", "def main() -> None:\n    pass\n")
+
+    external_root = tmp_path / "external-skill"
+    write_repo_file(external_root, "SKILL.md", "# External skill")
+    write_repo_file(external_root, "AGENTS.md", "# External agents")
+    write_repo_file(external_root, "scripts/sync.py", "print('external')\n")
+
+    junction_path = repo / "skills" / "external"
+    junction_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_path), str(external_root)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_path.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    probe = RepositoryProbeService(max_files=10, max_file_bytes=256).probe(repo)
+
+    assert probe.matched_files == ("main.py",)
+    assert "entrypoint-driven" in probe.architecture_signals
+    assert "codex-skill-package" not in probe.architecture_signals
+    assert "skill-ecosystem" not in probe.architecture_signals
+    assert "plugin-ecosystem" not in probe.architecture_signals
+
+
+def test_probe_ignores_root_alias_files_in_first_pass(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    root_skill = write_repo_file(repo, "SKILL.md", "# External-looking root skill")
+    write_repo_file(repo, "main.py", "def main() -> None:\n    pass\n")
+
+    for target in (
+        "haotian.services.repository_probe_service.is_alias_path",
+        "haotian.services.path_alias_guard.is_alias_path",
+    ):
+        monkeypatch.setattr(target, lambda path: path == root_skill)
+
+    probe = RepositoryProbeService(max_files=10, max_file_bytes=256).probe(repo)
+
+    assert probe.matched_files == ("main.py",)
+    assert "entrypoint-driven" in probe.architecture_signals
+    assert "codex-skill-package" not in probe.architecture_signals
+    assert "skill-ecosystem" not in probe.architecture_signals
 
 
 def test_probe_prioritizes_skill_and_markdown_files(tmp_path) -> None:

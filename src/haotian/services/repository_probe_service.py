@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 
 from haotian.config import get_settings
+from haotian.services.path_alias_guard import is_alias_path, iter_safe_files
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,9 +88,19 @@ class RepositoryProbeService:
         if not root.is_dir():
             return self._fallback_result("repository root is not a directory")
 
-        root_files = tuple(sorted(child.name for child in root.iterdir() if child.is_file()))
-        recursive_files = tuple(sorted(path for path in root.rglob("*") if path.is_file()))
-        matches = self._collect_matches(root, recursive_files)
+        root_file_paths = tuple(
+            sorted(
+                (
+                    child
+                    for child in root.iterdir()
+                    if child.is_file() and not is_alias_path(child)
+                ),
+                key=lambda path: path.name.lower(),
+            )
+        )
+        root_files = tuple(path.name for path in root_file_paths)
+        recursive_files = tuple(sorted(iter_safe_files(root)))
+        matches = self._collect_matches(root, root_file_paths, recursive_files)
 
         analysis_limits: list[str] = []
         selected = matches[: self.max_files]
@@ -119,11 +130,16 @@ class RepositoryProbeService:
             analysis_limits=tuple(dict.fromkeys(analysis_limits)),
         )
 
-    def _collect_matches(self, root: Path, recursive_files: tuple[Path, ...]) -> list[_ProbeMatch]:
+    def _collect_matches(
+        self,
+        root: Path,
+        root_file_paths: tuple[Path, ...],
+        recursive_files: tuple[Path, ...],
+    ) -> list[_ProbeMatch]:
         matches: list[_ProbeMatch] = []
         seen_paths: set[str] = set()
 
-        for child in sorted((path for path in root.iterdir() if path.is_file()), key=lambda path: path.name.lower()):
+        for child in root_file_paths:
             keywords = self._first_pass_keywords(child, root)
             if not keywords:
                 continue

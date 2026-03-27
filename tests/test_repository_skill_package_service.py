@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from haotian.services.repository_analysis_service import RepositoryAnalysisResult
 from haotian.services.repository_analysis_service import RepositoryAnalysisService
@@ -94,6 +98,34 @@ def test_discover_ignores_supporting_docs_without_skill_manifest(tmp_path) -> No
     result = RepositorySkillPackageService().discover(repo)
 
     assert result == ()
+
+
+def test_discover_ignores_windows_junction_skill_packages(tmp_path) -> None:
+    if os.name != "nt" or not hasattr(Path("x"), "is_junction"):
+        pytest.skip("Windows junctions are not available")
+
+    repo = tmp_path / "repo"
+    write_repo_file(repo, "skills/local/SKILL.md", "# Local skill")
+    write_repo_file(repo, "skills/local/skill_runner.py", "print('local')\n")
+
+    external_root = tmp_path / "external-skill"
+    write_repo_file(external_root, "SKILL.md", "# External skill")
+    write_repo_file(external_root, "skill_runner.py", "print('external')\n")
+
+    junction_path = repo / "skills" / "external"
+    junction_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction_path), str(external_root)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not junction_path.is_junction():
+        pytest.skip("Windows junction creation is not supported in this environment")
+
+    discovered = RepositorySkillPackageService().discover(repo)
+
+    assert tuple(package.relative_root for package in discovered) == ("skills/local",)
+    assert all(package.skill_name != "external" for package in discovered)
 
 
 def test_analysis_result_exposes_discovered_skill_packages_in_classification_fields(tmp_path) -> None:

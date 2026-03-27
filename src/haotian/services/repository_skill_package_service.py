@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from haotian.services.path_alias_guard import iter_safe_files
+
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredSkillPackage:
@@ -51,8 +53,9 @@ class RepositorySkillPackageService:
         if not root.is_dir():
             return ()
 
+        repo_files = tuple(iter_safe_files(root))
         manifests = sorted(
-            (path for path in root.rglob("SKILL.md") if path.is_file()),
+            (path for path in repo_files if path.name == "SKILL.md"),
             key=lambda path: self._sort_key(root, path),
         )
         package_roots = tuple(manifest.parent for manifest in manifests)
@@ -61,7 +64,7 @@ class RepositorySkillPackageService:
                 skill_name=self._skill_name(root, manifest.parent),
                 package_root=manifest.parent,
                 relative_root=self._relative_root(root, manifest.parent),
-                files=self._inventory_files(manifest.parent, package_roots),
+                files=self._inventory_files(manifest.parent, package_roots, repo_files),
             )
             for manifest in manifests
         ]
@@ -80,13 +83,25 @@ class RepositorySkillPackageService:
         return package_root.relative_to(root).as_posix()
 
     @staticmethod
-    def _inventory_files(package_root: Path, package_roots: tuple[Path, ...]) -> tuple[str, ...]:
+    def _inventory_files(
+        package_root: Path,
+        package_roots: tuple[Path, ...],
+        repo_files: tuple[Path, ...],
+    ) -> tuple[str, ...]:
         files = sorted(
             path.relative_to(package_root).as_posix()
-            for path in package_root.rglob("*")
-            if path.is_file() and not RepositorySkillPackageService._is_nested_package_file(package_root, path, package_roots)
+            for path in repo_files
+            if RepositorySkillPackageService._is_package_file(package_root, path, package_roots)
         )
         return tuple(files)
+
+    @staticmethod
+    def _is_package_file(package_root: Path, path: Path, package_roots: tuple[Path, ...]) -> bool:
+        try:
+            path.relative_to(package_root)
+        except ValueError:
+            return False
+        return not RepositorySkillPackageService._is_nested_package_file(package_root, path, package_roots)
 
     @staticmethod
     def _is_nested_package_file(package_root: Path, path: Path, package_roots: tuple[Path, ...]) -> bool:
