@@ -21,15 +21,17 @@ def run_once(
 
     resolved_date = _normalize_report_date(report_date)
     orchestration_service = service or _build_service(workspace)
-    output_path = orchestration_service.artifact_service.classification_output_path(resolved_date.isoformat())
+    decisions_path = orchestration_service.artifact_service.skill_merge_decisions_path(resolved_date.isoformat())
+    legacy_output_path = orchestration_service.artifact_service.classification_output_path(resolved_date.isoformat())
 
-    if output_path.exists() and orchestration_service.artifact_service.is_current_prepare_artifact(resolved_date.isoformat()):
-        result = orchestration_service.ingest_classification_output(resolved_date, output_path)
+    if decisions_path.exists() and orchestration_service.artifact_service.is_current_prepare_artifact(resolved_date.isoformat()):
+        result = orchestration_service.ingest_skill_merge_decisions(resolved_date, decisions_path)
         summary = _build_finalize_summary(result, orchestration_service.artifact_service)
     else:
-        output_path.unlink(missing_ok=True)
+        decisions_path.unlink(missing_ok=True)
+        legacy_output_path.unlink(missing_ok=True)
         result = orchestration_service.build_classification_input(resolved_date)
-        summary = _build_prepare_summary(result, output_path)
+        summary = _build_prepare_summary(result, legacy_output_path)
 
     run_summary_path = orchestration_service.artifact_service.run_summary_path(resolved_date.isoformat())
     summary["run_summary"] = str(run_summary_path)
@@ -50,7 +52,7 @@ def _build_service(workspace: Path | str | None) -> OrchestrationService:
     else:
         base_dir = Path(workspace)
         data_dir = base_dir / "data"
-        database_url = f"sqlite:///{(data_dir / 'app.db').resolve().as_posix()}"
+        database_url = f"sqlite:///{(data_dir / 'haotian.db').resolve().as_posix()}"
         report_dir = data_dir / "reports"
         run_dir = data_dir / "runs"
         repository_tmp_dir = data_dir / "tmp" / "repos"
@@ -64,7 +66,13 @@ def _build_service(workspace: Path | str | None) -> OrchestrationService:
 
 
 def _build_prepare_summary(result: ClassificationInputBuildResult, output_path: Path) -> dict[str, object]:
-    status = "awaiting_classification" if result.classification_input_path is not None else "failed"
+    status = "awaiting_skill_decision" if result.classification_input_path is not None else "failed"
+    skill_candidates_path = getattr(result, "skill_candidates_path", None)
+    skill_merge_decisions_path = (
+        skill_candidates_path.with_name("skill-merge-decisions.json")
+        if skill_candidates_path is not None
+        else None
+    )
     return {
         "status": status,
         "report_date": result.report_date.isoformat(),
@@ -76,15 +84,17 @@ def _build_prepare_summary(result: ClassificationInputBuildResult, output_path: 
         "skipped_due_to_budget": result.skipped_due_to_budget,
         "cleanup_warnings": result.cleanup_warnings,
         "classification_input": str(result.classification_input_path) if result.classification_input_path else None,
+        "skill_candidates": str(skill_candidates_path) if skill_candidates_path else None,
+        "skill_merge_decisions": str(skill_merge_decisions_path) if skill_merge_decisions_path else None,
         "classification_output": str(output_path),
         "skill_sync_report": None,
         "skill_sync_summary": ClassificationArtifactService.empty_skill_sync_report_payload(result.report_date.isoformat())["summary"],
         "skill_sync_actions": [],
         "stage_errors": result.stage_errors,
         "next_action": (
-            "Read docs/capability-taxonomy.md, write classification-output.json beside the staged input, "
+            "Read skill-candidates.json, write skill-merge-decisions.json beside the staged input, "
             "then run the same command again to finalize reports."
-            if status == "awaiting_classification"
+            if status == "awaiting_skill_decision"
             else "Inspect stage_errors and repair the run."
         ),
     }
@@ -110,6 +120,7 @@ def _build_finalize_summary(
         "fallback_repos": result.fallback_repos,
         "skipped_due_to_budget": result.skipped_due_to_budget,
         "cleanup_warnings": result.cleanup_warnings,
+        "skill_merge_decisions": str(result.skill_merge_decisions_path) if result.skill_merge_decisions_path else None,
         "classification_output": str(result.classification_output_path) if result.classification_output_path else None,
         "markdown_report": str(result.markdown_report_path) if result.markdown_report_path else None,
         "json_report": str(result.json_report_path) if result.json_report_path else None,

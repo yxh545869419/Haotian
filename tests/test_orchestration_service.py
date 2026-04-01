@@ -11,6 +11,7 @@ from haotian.services.repository_analysis_service import EvidenceSnippet as Anal
 from haotian.services.repository_analysis_service import RepositoryAnalysisResult
 from haotian.services.repository_analysis_service import RepositoryAnalysisService
 from haotian.services.repository_probe_service import RepositoryProbeService
+from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
 from haotian.registry.capability_registry import CapabilityRegistryRecord
 from haotian.registry.capability_registry import CapabilityRegistryRepository, CapabilityStatus
 from haotian.services.classification_artifact_service import ClassificationArtifactService
@@ -295,6 +296,23 @@ class BudgetCollector:
         return fixtures[period]
 
 
+class SingleRepoCollector:
+    def fetch_trending(self, period: str) -> list[TrendingRepo]:
+        return [
+            TrendingRepo(
+                snapshot_date="2026-03-20",
+                period=period,
+                rank=1,
+                repo_full_name="acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                description="Browser automation agent for websites.",
+                language="Python",
+                stars=100,
+                forks=10,
+            )
+        ]
+
+
 class MutableCollector:
     def __init__(self, repo_full_names: list[str]) -> None:
         self.repo_full_names = repo_full_names
@@ -351,6 +369,235 @@ def test_build_classification_input_writes_repo_metadata(tmp_path) -> None:
     with sqlite3.connect(tmp_path / "app.db") as connection:
         row_count = connection.execute("SELECT COUNT(*) FROM repo_analysis_snapshots").fetchone()[0]
     assert row_count == 2
+
+
+def test_build_classification_input_writes_skill_candidates_artifact(tmp_path) -> None:
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="agent-builder",
+            package_root=Path("skills/agent-builder"),
+            relative_root="skills/agent-builder",
+            files=("SKILL.md", "references/agent-philosophy.md", "scripts/init_agent.py"),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+            "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
+        }
+    )
+    service = build_service(tmp_path, repository_analysis_service=analysis_service)
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    assert result.skill_candidates_path is not None
+    payload = json.loads(result.skill_candidates_path.read_text(encoding="utf-8"))
+    assert payload["analysis_format"] == "skill-discovery-v1"
+    assert payload["expected_output_filename"] == "skill-merge-decisions.json"
+    assert payload["candidates"][0]["display_name"] == "agent-builder"
+    assert payload["candidates"][0]["candidate_id"].startswith("skillcand-")
+
+
+def test_ingest_skill_merge_decisions_syncs_accepted_candidates(tmp_path) -> None:
+    class SingleRepoCollector:
+        def fetch_trending(self, period: str) -> list[TrendingRepo]:
+            return [
+                TrendingRepo(
+                    snapshot_date="2026-03-20",
+                    period=period,
+                    rank=1,
+                    repo_full_name="acme/browser-bot",
+                    repo_url="https://github.com/acme/browser-bot",
+                    description="Browser automation agent for websites.",
+                    language="Python",
+                    stars=100,
+                    forks=10,
+                )
+            ]
+
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="agent-builder",
+            package_root=tmp_path / "source" / "skills" / "agent-builder",
+            relative_root="skills/agent-builder",
+            files=("SKILL.md", "README.md", "settings.json"),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    skill_sync_service = StubSkillSyncService()
+    service = build_service(
+        tmp_path,
+        collector=SingleRepoCollector(),
+        repository_analysis_service=analysis_service,
+        skill_sync_service=skill_sync_service,
+    )
+
+    staged = service.build_classification_input(date(2026, 3, 20))
+    candidates_payload = json.loads(staged.skill_candidates_path.read_text(encoding="utf-8"))
+    decisions_path = service.artifact_service.skill_merge_decisions_path("2026-03-20")
+    decisions_path.write_text(
+        json.dumps(
+            [
+                {
+                    "candidate_id": candidates_payload["candidates"][0]["candidate_id"],
+                    "decision": "install",
+                    "canonical_name": "Agent Builder",
+                    "merge_target": None,
+                    "accepted": True,
+                    "reason": "完整包，可直接落地。",
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_skill_merge_decisions(date(2026, 3, 20), decisions_path)
+
+    assert result.stage_errors == []
+    assert skill_sync_service.calls
+    synced_candidates = skill_sync_service.calls[0][1]
+    assert len(synced_candidates) == 1
+    assert synced_candidates[0].slug == "agent-builder"
+    assert synced_candidates[0].display_name == "Agent Builder"
+    assert result.skill_sync_summary["candidate_count"] == 1
+    assert result.skill_sync_report_path is not None
+
+
+def test_ingest_skill_merge_decisions_joins_candidate_ids_back_to_prepare_artifact(tmp_path) -> None:
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=tmp_path / "source",
+            relative_root="skills/browser-bot",
+            files=("SKILL.md", "references/browser-playbook.md"),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    skill_sync_service = StubSkillSyncService()
+    service = build_service(
+        tmp_path,
+        collector=SingleRepoCollector(),
+        repository_analysis_service=analysis_service,
+        skill_sync_service=skill_sync_service,
+    )
+
+    staged = service.build_classification_input(date(2026, 3, 20))
+    candidates_payload = json.loads(staged.skill_candidates_path.read_text(encoding="utf-8"))
+    candidate_id = candidates_payload["candidates"][0]["candidate_id"]
+    decision_path = staged.skill_candidates_path.with_name("skill-merge-decisions.json")
+    decision_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-20",
+                "decisions": [
+                    {
+                        "candidate_id": candidate_id,
+                        "decision": "accept",
+                        "canonical_name": "Browser Bot Canonical",
+                        "merge_target": "browser-bot-canonical",
+                        "accepted": True,
+                        "reason": "The package is a stable browser automation skill.",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_skill_merge_decisions(date(2026, 3, 20), decision_path)
+    sync_payload = json.loads((tmp_path / "runs" / "2026-03-20" / "skill-sync-report.json").read_text(encoding="utf-8"))
+
+    assert result.stage_errors == []
+    assert result.skill_merge_decisions_path == decision_path
+    assert skill_sync_service.calls
+    candidates = skill_sync_service.calls[0][1]
+    assert len(candidates) == 1
+    assert candidates[0].slug == "browser-bot-canonical"
+    assert candidates[0].display_name == "Browser Bot Canonical"
+    assert candidates[0].source_repo_full_name == "acme/browser-bot"
+    assert candidates[0].relative_root == "skills/browser-bot"
+    assert candidates[0].files == ("SKILL.md", "references/browser-playbook.md")
+    assert sync_payload["summary"]["candidate_count"] == 1
+
+
+def test_ingest_skill_merge_decisions_rejects_unknown_candidate_ids(tmp_path) -> None:
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=tmp_path / "source",
+            relative_root="skills/browser-bot",
+            files=("SKILL.md", "references/browser-playbook.md"),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=SingleRepoCollector(),
+        repository_analysis_service=analysis_service,
+        skill_sync_service=StubSkillSyncService(),
+    )
+
+    staged = service.build_classification_input(date(2026, 3, 20))
+    decision_path = staged.skill_candidates_path.with_name("skill-merge-decisions.json")
+    decision_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-20",
+                "decisions": [
+                    {
+                        "candidate_id": "skillcand-missing",
+                        "decision": "accept",
+                        "canonical_name": "Missing Candidate",
+                        "merge_target": "missing-candidate",
+                        "accepted": True,
+                        "reason": "This id should not resolve.",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.ingest_skill_merge_decisions(date(2026, 3, 20), decision_path)
+
+    assert result.stage_errors
+    assert "skillcand-missing" in result.stage_errors[0]
 
 
 def test_build_classification_input_aborts_on_ingest_failure_and_clears_snapshots(tmp_path, monkeypatch) -> None:

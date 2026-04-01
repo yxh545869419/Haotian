@@ -39,6 +39,18 @@ class RepoClassificationRecord:
     capabilities: tuple[ClassifiedCapabilityRecord, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SkillMergeDecisionRecord:
+    """Landing-stage Codex decision for one staged skill candidate."""
+
+    candidate_id: str
+    decision: str
+    canonical_name: str
+    merge_target: str | None
+    accepted: bool
+    reason: str
+
+
 class ClassificationArtifactService:
     """Manage staged input/output artifacts for the Codex classification step."""
 
@@ -72,6 +84,12 @@ class ClassificationArtifactService:
 
     def taxonomy_gap_candidates_path(self, report_date: str) -> Path:
         return self.run_dir(report_date) / "taxonomy-gap-candidates.json"
+
+    def skill_candidates_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "skill-candidates.json"
+
+    def skill_merge_decisions_path(self, report_date: str) -> Path:
+        return self.run_dir(report_date) / "skill-merge-decisions.json"
 
     def skill_sync_report_path(self, report_date: str) -> Path:
         return self.run_dir(report_date) / "skill-sync-report.json"
@@ -114,6 +132,18 @@ class ClassificationArtifactService:
             "taxonomy_path": self.taxonomy_path,
             "expected_output_filename": "classification-output.json",
             "items": items,
+        }
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
+    def write_skill_candidates_input(self, *, report_date: str, candidates: list[dict[str, object]]) -> Path:
+        target = self.skill_candidates_path(report_date)
+        payload = {
+            "schema_version": 1,
+            "analysis_format": "skill-discovery-v1",
+            "report_date": report_date,
+            "expected_output_filename": "skill-merge-decisions.json",
+            "candidates": candidates,
         }
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
@@ -165,6 +195,73 @@ class ClassificationArtifactService:
                 raise ValueError(f"Classification input item #{index} must be an object.")
             normalized.append(item)
         return normalized
+
+    def read_skill_candidates_payload(self, report_date: str) -> dict[str, object]:
+        path = self.skill_candidates_path(report_date)
+        if not path.exists():
+            raise FileNotFoundError(f"Skill candidates input not found: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Skill candidates input must be a JSON object.")
+        return payload
+
+    def read_skill_candidates_items(self, report_date: str) -> list[dict[str, object]]:
+        payload = self.read_skill_candidates_payload(report_date)
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list):
+            raise ValueError("Skill candidates input must include a candidates array.")
+        normalized: list[dict[str, object]] = []
+        for index, item in enumerate(candidates):
+            if not isinstance(item, dict):
+                raise ValueError(f"Skill candidate #{index} must be an object.")
+            normalized.append(item)
+        return normalized
+
+    def read_skill_merge_decisions_payload(self, path: Path) -> dict[str, object] | list[object]:
+        if not path.exists():
+            raise FileNotFoundError(f"Skill merge decisions not found: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict | list):
+            raise ValueError("Skill merge decisions must be a JSON object or array.")
+        return payload
+
+    def read_skill_merge_decisions(self, path: Path) -> list[SkillMergeDecisionRecord]:
+        payload = self.read_skill_merge_decisions_payload(path)
+        raw_items = payload.get("decisions") if isinstance(payload, dict) else payload
+        if not isinstance(raw_items, list):
+            raise ValueError("Skill merge decisions must include a decisions array.")
+
+        records: list[SkillMergeDecisionRecord] = []
+        seen_candidate_ids: set[str] = set()
+        for index, raw_item in enumerate(raw_items):
+            if not isinstance(raw_item, dict):
+                raise ValueError(f"Skill merge decision #{index} must be an object.")
+            candidate_id = self._require_non_empty_string(raw_item, "candidate_id", index=index)
+            if candidate_id in seen_candidate_ids:
+                raise ValueError(f"Duplicate skill merge decision for candidate_id '{candidate_id}'.")
+            seen_candidate_ids.add(candidate_id)
+            decision = self._require_non_empty_string(raw_item, "decision", candidate_id=candidate_id)
+            canonical_name = self._require_non_empty_string(raw_item, "canonical_name", candidate_id=candidate_id)
+            merge_target = raw_item.get("merge_target")
+            if merge_target is not None:
+                if not isinstance(merge_target, str) or not merge_target.strip():
+                    raise ValueError(f"Skill merge decision '{candidate_id}' merge_target must be null or non-empty string.")
+                merge_target = merge_target.strip()
+            accepted = raw_item.get("accepted")
+            if not isinstance(accepted, bool):
+                raise ValueError(f"Skill merge decision '{candidate_id}' must include boolean accepted.")
+            reason = self._require_non_empty_string(raw_item, "reason", candidate_id=candidate_id)
+            records.append(
+                SkillMergeDecisionRecord(
+                    candidate_id=candidate_id,
+                    decision=decision,
+                    canonical_name=canonical_name,
+                    merge_target=merge_target,
+                    accepted=accepted,
+                    reason=reason,
+                )
+            )
+        return records
 
     def read_classification_output(self, path: Path) -> list[RepoClassificationRecord]:
         if not path.exists():

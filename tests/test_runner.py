@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from haotian.runner import run_once
 from haotian.services.classification_artifact_service import ClassificationArtifactService
 from haotian.services.orchestration_service import OrchestrationService
 from haotian.services.report_service import ReportService
+from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
 from tests.test_orchestration_service import BudgetCollector
 from tests.test_orchestration_service import StubCollector
 from tests.test_orchestration_service import StubMetadataFetcher
@@ -34,9 +36,21 @@ def build_runner_service(
 
 
 def test_runner_stages_then_finalizes_reports(tmp_path) -> None:
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="browser-bot",
+            package_root=tmp_path / "source" / "skills" / "browser-bot",
+            relative_root="skills/browser-bot",
+            files=("SKILL.md", "README.md", "settings.json"),
+        ),
+    )
     analysis_service = StubRepositoryAnalysisService(
         {
-            "acme/browser-bot": make_layered_result("acme/browser-bot", repo_url="https://github.com/acme/browser-bot"),
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
             "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
         }
     )
@@ -44,8 +58,10 @@ def test_runner_stages_then_finalizes_reports(tmp_path) -> None:
 
     first = run_once(report_date="2026-03-20", service=service)
 
-    assert first["status"] == "awaiting_classification"
+    assert first["status"] == "awaiting_skill_decision"
     assert first["classification_input"].endswith("classification-input.json")
+    assert first["skill_candidates"].endswith("skill-candidates.json")
+    assert first["skill_merge_decisions"].endswith("skill-merge-decisions.json")
     assert first["stage_errors"] == []
     assert first["deep_analyzed_repos"] == 2
     assert first["cached_reused_repos"] == 0
@@ -53,24 +69,24 @@ def test_runner_stages_then_finalizes_reports(tmp_path) -> None:
     assert first["skipped_due_to_budget"] == 0
     assert first["cleanup_warnings"] == 0
 
-    output_path = service.artifact_service.classification_output_path("2026-03-20")
-    output_path.write_text(
+    decisions_path = service.artifact_service.skill_merge_decisions_path("2026-03-20")
+    skill_candidates_payload = json.loads(Path(first["skill_candidates"]).read_text(encoding="utf-8"))
+    decisions_path.write_text(
         json.dumps(
-            [
-                {
-                    "repo_full_name": "acme/browser-bot",
-                    "capabilities": [
-                        {
-                            "capability_id": "browser_automation",
-                            "confidence": 0.93,
-                            "reason": "The repo centers on browser workflow automation.",
-                            "summary": "Automates browser workflows for websites.",
-                            "needs_review": False,
-                            "source_label": "codex",
-                        }
-                    ],
-                }
-            ],
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-20",
+                "decisions": [
+                    {
+                        "candidate_id": skill_candidates_payload["candidates"][0]["candidate_id"],
+                        "decision": "install",
+                        "canonical_name": "Browser Bot Canonical",
+                        "merge_target": "browser-bot-canonical",
+                        "accepted": True,
+                        "reason": "完整 skill 包，可直接安装。",
+                    }
+                ],
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -99,6 +115,7 @@ def test_runner_stages_then_finalizes_reports(tmp_path) -> None:
     assert "manual_attention_items" in second
     assert "taxonomy_gap_candidates" in second
     assert second["taxonomy_gap_candidates"] == []
+    assert second["skill_merge_decisions"].endswith("skill-merge-decisions.json")
 
 
 def test_runner_summary_includes_batch_counts(tmp_path) -> None:
@@ -141,7 +158,7 @@ def test_runner_rebuilds_when_existing_artifacts_are_legacy_shallow(tmp_path) ->
                 "schema_version": 1,
                 "report_date": report_date,
                 "taxonomy_path": "docs/capability-taxonomy.md",
-                "expected_output_filename": "classification-output.json",
+                "expected_output_filename": "skill-merge-decisions.json",
                 "items": [
                     {
                         "repo_full_name": "legacy/shallow-repo",
@@ -160,15 +177,23 @@ def test_runner_rebuilds_when_existing_artifacts_are_legacy_shallow(tmp_path) ->
         ),
         encoding="utf-8",
     )
-    output_path = service.artifact_service.classification_output_path(report_date)
-    output_path.write_text(
+    decisions_path = service.artifact_service.skill_merge_decisions_path(report_date)
+    decisions_path.write_text(
         json.dumps(
-            [
-                {
-                    "repo_full_name": "legacy/shallow-repo",
-                    "capabilities": [],
-                }
-            ],
+            {
+                "schema_version": 1,
+                "report_date": report_date,
+                "decisions": [
+                    {
+                        "candidate_id": "skillcand-legacy",
+                        "decision": "discard",
+                        "canonical_name": "legacy-shallow-repo",
+                        "merge_target": None,
+                        "accepted": False,
+                        "reason": "旧版残留工件。",
+                    }
+                ],
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -177,12 +202,12 @@ def test_runner_rebuilds_when_existing_artifacts_are_legacy_shallow(tmp_path) ->
 
     summary = run_once(report_date=report_date, service=service)
 
-    assert summary["status"] == "awaiting_classification"
+    assert summary["status"] == "awaiting_skill_decision"
     assert summary["deep_analyzed_repos"] == 2
     assert summary["cached_reused_repos"] == 0
     assert summary["fallback_repos"] == 0
     assert summary["skipped_due_to_budget"] == 0
-    assert not output_path.exists()
+    assert not decisions_path.exists()
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     assert payload["items"][0]["analysis_depth"] == "layered"
 
@@ -201,6 +226,48 @@ def test_runner_reports_failed_prepare_when_ingest_fails(tmp_path, monkeypatch) 
     assert summary["classification_input"] is None
     assert summary["next_action"] == "Inspect stage_errors and repair the run."
     assert "classification-output.json" not in summary["next_action"]
+
+
+def test_runner_does_not_treat_legacy_classification_output_as_primary_finalize_contract(tmp_path) -> None:
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result("acme/browser-bot", repo_url="https://github.com/acme/browser-bot"),
+            "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
+        }
+    )
+    service = build_runner_service(tmp_path, repository_analysis_service=analysis_service)
+
+    first = run_once(report_date="2026-03-20", service=service)
+    legacy_output_path = service.artifact_service.classification_output_path("2026-03-20")
+    legacy_output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "repo_full_name": "acme/browser-bot",
+                    "capabilities": [
+                        {
+                            "capability_id": "browser_automation",
+                            "confidence": 0.93,
+                            "reason": "Legacy output should not finalize the main path.",
+                            "summary": "Automates browser workflows for websites.",
+                            "needs_review": False,
+                            "source_label": "codex",
+                        }
+                    ],
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    second = run_once(report_date="2026-03-20", service=service)
+
+    assert first["status"] == "awaiting_skill_decision"
+    assert second["status"] == "awaiting_skill_decision"
+    assert "skill-merge-decisions.json" in second["next_action"]
+    assert "classification-output.json" not in second["next_action"]
 
 
 def test_runner_workspace_scopes_repository_analysis_temp_root(tmp_path, monkeypatch) -> None:
@@ -225,7 +292,7 @@ def test_runner_workspace_scopes_repository_analysis_temp_root(tmp_path, monkeyp
                 stage_errors=[],
             )
 
-        def ingest_classification_output(self, report_date, path):  # noqa: ANN001
+        def ingest_skill_merge_decisions(self, report_date, path):  # noqa: ANN001
             raise AssertionError("unexpected finalize path")
 
     monkeypatch.setattr("haotian.runner.OrchestrationService", FakeOrchestrationService)

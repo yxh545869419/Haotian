@@ -23,13 +23,18 @@ from haotian.registry.capability_registry import (
     CapabilityRegistryRepository,
     CapabilityStatus,
 )
-from haotian.services.classification_artifact_service import ClassificationArtifactService, RepoClassificationRecord
+from haotian.services.classification_artifact_service import (
+    ClassificationArtifactService,
+    RepoClassificationRecord,
+    SkillMergeDecisionRecord,
+)
 from haotian.services.diff_service import CapabilityObservation, DiffService
 from haotian.services.ingest_service import IngestService
 from haotian.services.repository_analysis_cache_service import RepositoryAnalysisCacheService
 from haotian.services.repository_analysis_service import RepositoryAnalysisResult
 from haotian.services.repository_analysis_service import RepositoryAnalysisService
 from haotian.services.report_service import ReportService
+from haotian.services.repository_skill_candidate_service import RepositorySkillCandidateService
 from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
 from haotian.services.skill_sync_service import SkillSyncCandidate, SkillSyncService
 
@@ -49,6 +54,7 @@ class ClassificationInputBuildResult:
     skipped_due_to_budget: int = 0
     cleanup_warnings: int = 0
     classification_input_path: Path | None = None
+    skill_candidates_path: Path | None = None
     stage_errors: list[str] = field(default_factory=list)
 
     @property
@@ -71,6 +77,7 @@ class DailyPipelineResult:
     cleanup_warnings: int = 0
     markdown_report_path: Path | None = None
     json_report_path: Path | None = None
+    skill_merge_decisions_path: Path | None = None
     classification_output_path: Path | None = None
     capability_audit_path: Path | None = None
     taxonomy_gap_candidates_path: Path | None = None
@@ -108,6 +115,7 @@ class OrchestrationService:
         artifact_service: ClassificationArtifactService | None = None,
         repository_analysis_service: RepositoryAnalysisService | None = None,
         analysis_cache_service: RepositoryAnalysisCacheService | None = None,
+        repository_skill_candidate_service: RepositorySkillCandidateService | None = None,
         repository_tmp_dir: Path | None = None,
         max_deep_analysis_repos: int | None = None,
         database_url: str | None = None,
@@ -123,6 +131,7 @@ class OrchestrationService:
         self.artifact_service = artifact_service or ClassificationArtifactService()
         self.repository_analysis_service = repository_analysis_service
         self.analysis_cache_service = analysis_cache_service or RepositoryAnalysisCacheService(database_url=database_url)
+        self.repository_skill_candidate_service = repository_skill_candidate_service or RepositorySkillCandidateService()
         self.repository_tmp_dir = repository_tmp_dir
         self.max_deep_analysis_repos = max_deep_analysis_repos
         self.normalizer = CapabilityNormalizer()
@@ -185,6 +194,11 @@ class OrchestrationService:
             result.classification_input_path = self.artifact_service.write_classification_input(
                 report_date=target_date.isoformat(),
                 items=items,
+            )
+            skill_candidates = self.repository_skill_candidate_service.extract(items)
+            result.skill_candidates_path = self.artifact_service.write_skill_candidates_input(
+                report_date=target_date.isoformat(),
+                candidates=[candidate.to_payload() for candidate in skill_candidates],
             )
             LOGGER.info("[stage] wrote classification input to %s", result.classification_input_path)
         except Exception as exc:  # noqa: BLE001
@@ -287,6 +301,85 @@ class OrchestrationService:
 
         return result
 
+    def ingest_skill_merge_decisions(self, report_date: date | None = None, path: Path | None = None) -> DailyPipelineResult:
+        target_date = report_date or datetime.now(UTC).date()
+        initialize_schema(self.database_url)
+        result = DailyPipelineResult(report_date=target_date)
+        decisions_path = path or self.artifact_service.skill_merge_decisions_path(target_date.isoformat())
+        result.skill_merge_decisions_path = decisions_path
+        analysis_counters = self._load_repo_analysis_counters(target_date)
+        result.deep_analyzed_repos = analysis_counters["deep_analyzed_repos"]
+        result.cached_reused_repos = analysis_counters["cached_reused_repos"]
+        result.fallback_repos = analysis_counters["fallback_repos"]
+        result.skipped_due_to_budget = analysis_counters["skipped_due_to_budget"]
+        result.cleanup_warnings = analysis_counters["cleanup_warnings"]
+        result.skill_sync_summary = self.artifact_service.default_skill_sync_summary()
+        period_map = self._load_period_map(target_date)
+        result.repos_ingested = len(period_map)
+
+        try:
+            decisions = self.artifact_service.read_skill_merge_decisions(decisions_path)
+            sync_candidates = self._build_skill_sync_candidates_from_decisions(target_date, decisions)
+        except Exception as exc:  # noqa: BLE001
+            self._record_stage_error(result, "skill_merge_decisions", exc, {"path": str(decisions_path)})
+            return result
+
+        skill_sync_payload = self.artifact_service.empty_skill_sync_report_payload(target_date.isoformat())
+        try:
+            skill_sync_result = self.skill_sync_service.sync(
+                report_date=target_date,
+                candidates=sync_candidates,
+            )
+            skill_sync_payload = skill_sync_result.to_payload()
+        except Exception as exc:  # noqa: BLE001
+            self._record_stage_error(result, "skill_sync", exc, {"report_date": target_date.isoformat()})
+        finally:
+            try:
+                result.skill_sync_report_path = self.artifact_service.write_json_artifact(
+                    path=self.artifact_service.skill_sync_report_path(target_date.isoformat()),
+                    payload=skill_sync_payload,
+                )
+                result.skill_sync_summary = dict(skill_sync_payload.get("summary", {}))
+                result.skill_sync_actions = [
+                    dict(item)
+                    for item in skill_sync_payload.get("actions", [])
+                    if isinstance(item, dict)
+                ]
+            except Exception as exc:  # noqa: BLE001
+                self._record_stage_error(result, "skill_sync_artifact", exc, {"report_date": target_date.isoformat()})
+
+        try:
+            empty_audit_payload = {
+                "schema_version": 1,
+                "report_date": target_date.isoformat(),
+                "auto_promoted": [],
+                "risky_enhancement_candidates": [],
+                "manual_attention": [],
+            }
+            empty_gap_payload = {
+                "schema_version": 1,
+                "report_date": target_date.isoformat(),
+                "candidates": [],
+            }
+            result.capability_audit_path = self.artifact_service.write_json_artifact(
+                path=self.artifact_service.capability_audit_path(target_date.isoformat()),
+                payload=empty_audit_payload,
+            )
+            result.taxonomy_gap_candidates_path = self.artifact_service.write_json_artifact(
+                path=self.artifact_service.taxonomy_gap_candidates_path(target_date.isoformat()),
+                payload=empty_gap_payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._record_stage_error(result, "audit_artifacts", exc, {"report_date": target_date.isoformat()})
+
+        try:
+            result.markdown_report_path = self.report_service.generate_daily_report(target_date)
+            result.json_report_path = self.report_service.generate_daily_report_json(target_date)
+        except Exception as exc:  # noqa: BLE001
+            self._record_stage_error(result, "report", exc, {"report_date": target_date.isoformat()})
+
+        return result
+
     def _build_skill_sync_candidates(
         self,
         report_date: date,
@@ -339,6 +432,47 @@ class OrchestrationService:
         candidates.sort(key=lambda item: (item.slug.casefold(), item.source_repo_full_name.casefold(), item.relative_root.casefold()))
         return candidates
 
+    def _build_skill_sync_candidates_from_decisions(
+        self,
+        report_date: date,
+        decisions: list[SkillMergeDecisionRecord],
+    ) -> list[SkillSyncCandidate]:
+        staged_candidates = {
+            str(item.get("candidate_id", "")).strip(): item
+            for item in self.artifact_service.read_skill_candidates_items(report_date.isoformat())
+            if isinstance(item, dict)
+        }
+        accepted_candidates: list[SkillSyncCandidate] = []
+        for decision in decisions:
+            staged = staged_candidates.get(decision.candidate_id)
+            if staged is None:
+                raise ValueError(f"Unknown skill candidate_id '{decision.candidate_id}' in skill merge decisions.")
+            if not decision.accepted:
+                continue
+            merged_slug = self._slug_from_name(decision.merge_target or decision.canonical_name or str(staged.get("slug", "")))
+            if not merged_slug:
+                raise ValueError(f"Skill merge decision '{decision.candidate_id}' did not resolve to a usable slug.")
+            accepted_candidates.append(
+                SkillSyncCandidate(
+                    slug=merged_slug,
+                    display_name=decision.canonical_name,
+                    source_repo_full_name=str(staged.get("repo_full_name", "")).strip(),
+                    repo_url=str(staged.get("repo_url", "")).strip(),
+                    relative_root=str(staged.get("relative_root", ".")).strip() or ".",
+                    files=tuple(str(item).strip() for item in staged.get("files", []) if str(item).strip()),
+                    description=str(staged.get("description", "")).strip(),
+                    matched_keywords=tuple(
+                        str(item).strip() for item in staged.get("matched_keywords", []) if str(item).strip()
+                    ),
+                    architecture_signals=tuple(
+                        str(item).strip() for item in staged.get("architecture_signals", []) if str(item).strip()
+                    ),
+                    capability_ids=(),
+                )
+            )
+        accepted_candidates.sort(key=lambda item: (item.slug.casefold(), item.source_repo_full_name.casefold(), item.relative_root.casefold()))
+        return accepted_candidates
+
     def _build_active_capability_skill_candidates(
         self,
         capability_ids_by_repo: dict[str, tuple[str, ...]],
@@ -373,6 +507,11 @@ class OrchestrationService:
                 )
             )
         return candidates
+
+    @staticmethod
+    def _slug_from_name(value: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+        return normalized.strip("-")
 
     @staticmethod
     def _build_skill_candidate_slug(package: DiscoveredSkillPackage, repo_full_name: str) -> str:
