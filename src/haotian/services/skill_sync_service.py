@@ -47,6 +47,7 @@ class SkillSyncCandidate:
     repo_url: str
     relative_root: str
     files: tuple[str, ...]
+    source_package_root: Path | None = None
     description: str = ""
     matched_keywords: tuple[str, ...] = ()
     architecture_signals: tuple[str, ...] = ()
@@ -109,7 +110,7 @@ class SkillSyncResult:
 
 
 class SkillSyncService:
-    """Align existing skills or install audited managed wrappers for new ones."""
+    """Align existing skills or install audited full skill packages for new ones."""
 
     def __init__(
         self,
@@ -215,6 +216,30 @@ class SkillSyncService:
                 reason="Matched multiple installed skills with the same deterministic score.",
             )
         if matched_record is not None:
+            if matched_record.managed and self._is_wrapper_only_install(matched_record.skill_dir):
+                if self.managed_root is None or self.audit_service is None:
+                    return self._action(
+                        candidate,
+                        "blocked_audit_failure",
+                        slug=install_slug,
+                        matched_installed_slug=matched_record.slug,
+                        matched_installed_path=str(matched_record.skill_dir),
+                        reason="Skill sync install configuration is incomplete.",
+                    )
+                if candidate.source_package_root is None:
+                    return self._action(
+                        candidate,
+                        "blocked_audit_failure",
+                        slug=install_slug,
+                        matched_installed_slug=matched_record.slug,
+                        matched_installed_path=str(matched_record.skill_dir),
+                        reason="Candidate does not expose a source package root for full-package installation.",
+                    )
+                return self._install_new(
+                    candidate=candidate,
+                    install_slug=matched_record.slug,
+                    target_dir_override=matched_record.skill_dir,
+                )
             if self.audit_service is None:
                 return self._action(
                     candidate,
@@ -254,14 +279,28 @@ class SkillSyncService:
                 slug=install_slug,
                 reason="Skill sync install configuration is incomplete.",
             )
+        if candidate.source_package_root is None:
+            return self._action(
+                candidate,
+                "blocked_audit_failure",
+                slug=install_slug,
+                reason="Candidate does not expose a source package root for full-package installation.",
+            )
 
         return self._install_new(candidate=candidate, install_slug=install_slug)
 
-    def _install_new(self, *, candidate: SkillSyncCandidate, install_slug: str) -> SkillSyncAction:
+    def _install_new(
+        self,
+        *,
+        candidate: SkillSyncCandidate,
+        install_slug: str,
+        target_dir_override: Path | None = None,
+    ) -> SkillSyncAction:
         assert self.managed_root is not None
         assert self.audit_service is not None
+        assert candidate.source_package_root is not None
 
-        target_dir = self.managed_root / install_slug
+        target_dir = target_dir_override or (self.managed_root / install_slug)
         staging_dir = self.managed_root.parent / f".haotian-stage-{install_slug}"
         if not self._paths_are_safe(target_dir=target_dir, staging_dir=staging_dir):
             return self._action(
@@ -270,7 +309,7 @@ class SkillSyncService:
                 slug=install_slug,
                 reason="Managed install path escapes the allowed root or uses a symlinked alias.",
             )
-        if target_dir.exists():
+        if target_dir.exists() and not self._is_wrapper_only_install(target_dir):
             return self._action(
                 candidate,
                 "blocked_audit_failure",
@@ -280,13 +319,19 @@ class SkillSyncService:
 
         try:
             self.managed_root.mkdir(parents=True, exist_ok=True)
+            source_root = Path(candidate.source_package_root).resolve(strict=True)
+            if not source_root.is_dir():
+                return self._action(
+                    candidate,
+                    "blocked_audit_failure",
+                    slug=install_slug,
+                    reason=f"Source package root is not a directory: {source_root}",
+                )
             if staging_dir.exists():
                 shutil.rmtree(staging_dir, ignore_errors=False)
             staging_dir.mkdir(parents=True, exist_ok=False)
-            for relative_path, content in self._wrapper_files(candidate).items():
-                target = staging_dir / relative_path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+            self._copy_package_contents(source_root, staging_dir)
+            self._write_managed_metadata(staging_dir, candidate)
 
             audit_result = self.audit_service.audit(staging_dir)
             if not audit_result.is_installable():
@@ -297,10 +342,10 @@ class SkillSyncService:
                     slug=install_slug,
                     audit_status=str(getattr(audit_result, "status", "")),
                     audit_verdict=str(getattr(audit_result, "overall_verdict", "")),
-                    reason="The managed wrapper did not pass audit.",
+                    reason="The staged full package did not pass audit.",
                 )
 
-            staging_dir.replace(target_dir)
+            self._replace_directory(staging_dir=staging_dir, target_dir=target_dir)
             return self._action(
                 candidate,
                 "installed_new",
@@ -308,7 +353,7 @@ class SkillSyncService:
                 installed_path=str(target_dir.resolve(strict=False)),
                 audit_status=str(getattr(audit_result, "status", "")),
                 audit_verdict=str(getattr(audit_result, "overall_verdict", "")),
-                reason="Installed a new audited managed wrapper.",
+                reason="Installed a new audited full skill package.",
             )
         except Exception as exc:  # noqa: BLE001
             if staging_dir.exists():
@@ -317,7 +362,7 @@ class SkillSyncService:
                 candidate,
                 "rolled_back_install_failure",
                 slug=install_slug,
-                reason=f"Managed wrapper install failed and was rolled back: {exc}",
+                reason=f"Managed full-package install failed and was rolled back: {exc}",
             )
 
     def _match_candidate(
@@ -660,6 +705,88 @@ class SkillSyncService:
                 return False
 
         return False
+
+    @staticmethod
+    def _is_wrapper_only_install(skill_dir: Path) -> bool:
+        if not skill_dir.exists() or not skill_dir.is_dir():
+            return False
+        file_names = {
+            path.name.casefold()
+            for path in skill_dir.iterdir()
+            if path.is_file()
+        }
+        return file_names <= {"skill.md", "haotian-wrapper.json"}
+
+    @staticmethod
+    def _write_managed_metadata(staging_dir: Path, candidate: SkillSyncCandidate) -> None:
+        metadata = {
+            "schema_version": 1,
+            "managed_by": "haotian",
+            "slug": candidate.slug,
+            "display_name": candidate.display_name.strip() or candidate.slug,
+            "source_repo_full_name": candidate.source_repo_full_name,
+            "relative_root": candidate.relative_root,
+            "files": list(candidate.files),
+            "capability_ids": list(candidate.capability_ids),
+        }
+        (staging_dir / "haotian-wrapper.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def _copy_package_contents(cls, source_root: Path, staging_dir: Path) -> None:
+        for current, dirs, files in os.walk(source_root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            dirs[:] = [name for name in dirs if not cls._should_skip_source_path(source_root, current_path / name)]
+            for name in files:
+                source_path = current_path / name
+                if cls._should_skip_source_path(source_root, source_path):
+                    continue
+                relative = source_path.relative_to(source_root)
+                target_path = staging_dir / relative
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+
+    @staticmethod
+    def _should_skip_source_path(source_root: Path, path: Path) -> bool:
+        relative = path.relative_to(source_root)
+        parts = tuple(part.casefold() for part in relative.parts)
+        if not parts:
+            return False
+        if any(part in {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".venv", "venv", "env", "build", "dist", "site-packages", "node_modules", "vendor", "vendors", "third_party"} for part in parts):
+            return True
+        if any(part.startswith(".env") for part in parts):
+            return True
+        name = relative.name.casefold()
+        if name in {".ds_store", "thumbs.db", "desktop.ini", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock", "pipfile.lock"}:
+            return True
+        if name.endswith((".pyc", ".pyo", ".pyd", ".swp", ".swo", ".tmp", ".bak", ".orig", ".rej")):
+            return True
+        if name.endswith(".lock"):
+            return True
+        if any(part.startswith(".") and part not in {".github"} for part in parts[:-1]):
+            return True
+        return False
+
+    def _replace_directory(self, *, staging_dir: Path, target_dir: Path) -> None:
+        backup_dir: Path | None = None
+        try:
+            if target_dir.exists():
+                backup_dir = target_dir.with_name(f".haotian-backup-{target_dir.name}")
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=False)
+                target_dir.rename(backup_dir)
+            staging_dir.rename(target_dir)
+        except Exception:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            if backup_dir is not None and backup_dir.exists() and not target_dir.exists():
+                backup_dir.rename(target_dir)
+            raise
+        finally:
+            if backup_dir is not None and backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
 
     @staticmethod
     def _wrapper_files(candidate: SkillSyncCandidate) -> dict[str, str]:

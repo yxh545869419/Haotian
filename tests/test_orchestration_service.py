@@ -975,11 +975,13 @@ def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_
             "skill_name": "browser-bot",
             "relative_root": ".",
             "files": ["SKILL.md"],
+            "source_package_root": str(package_root),
         },
         {
             "skill_name": "browser",
             "relative_root": "skills/browser",
             "files": ["SKILL.md", "skill_runner.py"],
+            "source_package_root": str(package_root / "skills" / "browser"),
         },
     ]
     assert second_payload["items"][0]["discovered_skill_packages"] == first_payload["items"][0]["discovered_skill_packages"]

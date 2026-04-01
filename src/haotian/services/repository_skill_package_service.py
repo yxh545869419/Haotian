@@ -20,12 +20,16 @@ class DiscoveredSkillPackage:
             "skill_name": self.skill_name,
             "relative_root": self.relative_root,
             "files": list(self.files),
+            "source_package_root": str(self.package_root),
         }
 
     @classmethod
     def from_serialized_payload(cls, payload: dict[str, object]) -> "DiscoveredSkillPackage":
         relative_root = str(payload.get("relative_root", "")).strip()
         package_root = Path(".") if relative_root == "." else Path(relative_root)
+        source_package_root = payload.get("source_package_root")
+        if isinstance(source_package_root, str) and source_package_root.strip():
+            package_root = Path(source_package_root)
         files_raw = payload.get("files", ())
         files = tuple(
             str(item).strip()

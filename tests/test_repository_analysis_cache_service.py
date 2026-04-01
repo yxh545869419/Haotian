@@ -65,11 +65,12 @@ def test_repository_analysis_cache_round_trips_discovered_skill_packages(tmp_pat
             "skill_name": "browser-bot",
             "relative_root": ".",
             "files": ["SKILL.md"],
+            "source_package_root": str(tmp_path / "clone" / "repo"),
         },
         {
             "skill_name": "browser",
             "relative_root": "skills/browser",
             "files": ["SKILL.md", "skill_runner.py"],
+            "source_package_root": str(tmp_path / "clone" / "repo" / "skills" / "browser"),
         },
     ]
-    assert "package_root" not in payload["discovered_skill_packages"][0]

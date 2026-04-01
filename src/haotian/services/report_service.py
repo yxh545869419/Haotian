@@ -8,11 +8,13 @@ from datetime import date
 import json
 import sqlite3
 from pathlib import Path
+import re
 
 from haotian.config import get_settings
 from haotian.db.schema import get_connection, initialize_schema
 from haotian.registry.capability_registry import CapabilityStatus
 from haotian.services.classification_artifact_service import ClassificationArtifactService
+from haotian.services.codex_skill_inventory_service import CodexSkillInventoryService, InstalledSkillRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +81,7 @@ class ReportService:
         database_url: str | None = None,
         report_dir: Path | None = None,
         run_dir: Path | None = None,
+        inventory_service: CodexSkillInventoryService | None = None,
     ) -> None:
         settings = get_settings()
         self.database_url = database_url
@@ -89,6 +92,7 @@ class ReportService:
             self.run_dir = report_dir.parent / "runs"
         else:
             self.run_dir = settings.run_dir
+        self.inventory_service = inventory_service or CodexSkillInventoryService()
 
     def generate_daily_report(self, report_date: date | str) -> Path:
         target_date = self._normalize_date(report_date)
@@ -277,6 +281,9 @@ class ReportService:
         target_date: date,
         payload: dict[str, object],
     ) -> str:
+        if payload.get("report_format") == "skill-summary-v1":
+            return self._render_skill_markdown(target_date, payload)
+
         summary = payload["summary"]
         executive_summary = payload["executive_summary"]
         highlights = payload["highlights"]
@@ -366,6 +373,9 @@ class ReportService:
         sections: dict[str, list[ReportItem]],
         repo_snapshot: dict[str, tuple[str, ...]],
     ) -> dict[str, object]:
+        if self._has_skill_summary_artifacts(target_date):
+            return self._build_skill_report_payload(target_date, repo_snapshot)
+
         skill_sync_payload = self._load_skill_sync_report(target_date)
         summary = {
             "total_capabilities": len(sections["summary"]),
@@ -538,11 +548,369 @@ class ReportService:
             "json_report": str(self.report_dir / f"{report_label}.json"),
             "classification_input": str(run_base / "classification-input.json"),
             "classification_output": str(run_base / "classification-output.json"),
+            "skill_candidates": str(run_base / "skill-candidates.json"),
+            "skill_merge_decisions": str(run_base / "skill-merge-decisions.json"),
             "run_summary": str(run_base / "run-summary.json"),
             "capability_audit": str(run_base / "capability-audit.json"),
             "taxonomy_gap_candidates": str(run_base / "taxonomy-gap-candidates.json"),
             "skill_sync_report": str(run_base / "skill-sync-report.json"),
         }
+
+    def _has_skill_summary_artifacts(self, target_date: date) -> bool:
+        run_path = self.run_dir / target_date.isoformat()
+        return run_path.joinpath("skill-candidates.json").exists() and run_path.joinpath("skill-merge-decisions.json").exists()
+
+    def _build_skill_report_payload(
+        self,
+        target_date: date,
+        repo_snapshot: dict[str, tuple[str, ...]],
+    ) -> dict[str, object]:
+        skill_sync_payload = self._load_skill_sync_report(target_date)
+        installed_inventory = self._load_installed_skill_inventory()
+        skill_candidates = self._load_skill_candidates(target_date)
+        decisions = self._load_skill_merge_decisions(target_date)
+        merged_skill_cards, discovered_skill_cards = self._build_daily_skill_cards(
+            target_date=target_date,
+            skill_candidates=skill_candidates,
+            decisions=decisions,
+            skill_sync_payload=skill_sync_payload,
+            installed_inventory=installed_inventory,
+        )
+        installed_skill_cards = [
+            self._build_installed_skill_card(record)
+            for record in sorted(installed_inventory.values(), key=lambda item: item.display_name.casefold())
+        ]
+        integrated_count = sum(1 for card in merged_skill_cards if card["status"] == "integrated")
+        pending_count = sum(1 for card in merged_skill_cards if card["status"] == "pending_confirmation")
+        summary = {
+            "merged_skills": len(merged_skill_cards),
+            "integrated_skills": integrated_count,
+            "pending_skills": pending_count,
+            "installed_inventory": len(installed_skill_cards),
+        }
+        highlights = sorted(merged_skill_cards, key=self._skill_highlight_sort_key)[:5]
+        return {
+            "report_format": "skill-summary-v1",
+            "report_date": target_date.isoformat(),
+            "daily_skill_summary": summary,
+            "repo_snapshot": {key: list(value) for key, value in repo_snapshot.items()},
+            "executive_summary": {
+                "headline": (
+                    f"今日整理 {summary['merged_skills']} 个相关 skill，"
+                    f"其中已集成 {summary['integrated_skills']} 个，"
+                    f"待确认 {summary['pending_skills']} 个，"
+                    f"当前 Codex 基线已装 {summary['installed_inventory']} 个 skill。"
+                ),
+                "repo_changes": {
+                    "today": len(repo_snapshot["today"]),
+                    "new": len(repo_snapshot["new"]),
+                    "dropped": len(repo_snapshot["dropped"]),
+                },
+            },
+            "highlights": highlights,
+            "merged_skill_cards": merged_skill_cards,
+            "discovered_skill_cards": discovered_skill_cards,
+            "installed_skill_cards": installed_skill_cards,
+            "skill_sync_summary": skill_sync_payload["summary"],
+            "skill_sync_actions": skill_sync_payload["actions"],
+            "artifact_links": self._build_artifact_links(target_date),
+        }
+
+    def _render_skill_markdown(
+        self,
+        target_date: date,
+        payload: dict[str, object],
+    ) -> str:
+        summary = payload["daily_skill_summary"]
+        executive_summary = payload["executive_summary"]
+        highlights = payload["highlights"]
+        merged_skill_cards = payload["merged_skill_cards"]
+        installed_skill_cards = payload["installed_skill_cards"]
+        artifact_links = payload["artifact_links"]
+        repo_changes = executive_summary["repo_changes"]
+        lines = [
+            f"# 每日 Skill 管理摘要 - {target_date.isoformat()}",
+            "",
+            "## 总览",
+            "",
+            f"一句话结论：{executive_summary['headline']}",
+            (
+                "统计："
+                f"相关 skill {summary['merged_skills']}｜"
+                f"已集成 {summary['integrated_skills']}｜"
+                f"需确认 {summary['pending_skills']}｜"
+                f"当前已集成 {summary['installed_inventory']}"
+            ),
+            (
+                "仓库变化："
+                f"今日 {repo_changes['today']} 个｜"
+                f"新增 {repo_changes['new']} 个｜"
+                f"移除 {repo_changes['dropped']} 个"
+            ),
+            "",
+            "## 今日重点",
+            "",
+        ]
+        if highlights:
+            for card in highlights:
+                lines.append(
+                    f"- `{card['display_name']}`：{card['status_label']}，来源仓库 {self._render_repo_list(tuple(card['source_repositories']))}。"
+                )
+        else:
+            lines.append("_今日暂无重点 skill。_")
+        lines.extend(["", "## Skill 摘要", ""])
+        if merged_skill_cards:
+            for card in merged_skill_cards:
+                installed_paths = tuple(card["installed_paths"])
+                lines.extend(
+                    [
+                        f"### {card['display_name']} (`{card['skill_id']}`)",
+                        f"状态：{card['status_label']}",
+                        f"来源仓库：{self._render_repo_list(tuple(card['source_repositories']))}",
+                        f"用途：{card['purpose']}",
+                        f"已集成位置：{self._render_path_list(installed_paths)}",
+                        (
+                            "合并来源："
+                            + (", ".join(f"`{value}`" for value in card["merged_from"]) if card["merged_from"] else "_无_")
+                        ),
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["_今日未发现 skill 候选。_", ""])
+        lines.extend(["", "## 当前已集成 Skills", ""])
+        if installed_skill_cards:
+            for card in installed_skill_cards:
+                lines.extend(
+                    [
+                        f"### {card['display_name']} (`{card['skill_id']}`)",
+                        f"状态：{card['status_label']}",
+                        f"用途：{card['purpose']}",
+                        f"已集成位置：{self._render_path_list(tuple(card['installed_paths']))}",
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["_当前未扫描到可用的已安装 skill。_", ""])
+        lines.extend(
+            [
+                "## 产物路径",
+                "",
+                f"- Markdown 报告：`{artifact_links['markdown_report']}`",
+                f"- JSON 报告：`{artifact_links['json_report']}`",
+                f"- Skill 候选：`{artifact_links['skill_candidates']}`",
+                f"- Landing 决策：`{artifact_links['skill_merge_decisions']}`",
+                f"- Skill Sync：`{artifact_links['skill_sync_report']}`",
+                f"- 运行摘要：`{artifact_links['run_summary']}`",
+            ]
+        )
+        return "\n".join(lines).strip() + "\n"
+
+    def _load_installed_skill_inventory(self) -> dict[str, InstalledSkillRecord]:
+        try:
+            records = self.inventory_service.scan()
+        except Exception:  # noqa: BLE001
+            return {}
+        return {
+            slug: record
+            for slug, record in records.items()
+            if self._installed_skill_is_usable(record)
+        }
+
+    def _load_skill_candidates(self, target_date: date) -> dict[str, dict[str, object]]:
+        path = self.run_dir / target_date.isoformat() / "skill-candidates.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        raw_candidates = payload.get("candidates", [])
+        if not isinstance(raw_candidates, list):
+            return {}
+        normalized: dict[str, dict[str, object]] = {}
+        for item in raw_candidates:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(item.get("candidate_id", "")).strip()
+            if not candidate_id:
+                continue
+            normalized[candidate_id] = item
+        return normalized
+
+    def _load_skill_merge_decisions(self, target_date: date) -> list[dict[str, object]]:
+        path = self.run_dir / target_date.isoformat() / "skill-merge-decisions.json"
+        if not path.exists():
+            return []
+        artifact_service = ClassificationArtifactService(base_dir=self.run_dir)
+        try:
+            records = artifact_service.read_skill_merge_decisions(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return []
+        return [
+            {
+                "candidate_id": record.candidate_id,
+                "decision": record.decision,
+                "canonical_name": record.canonical_name,
+                "merge_target": record.merge_target,
+                "accepted": record.accepted,
+                "reason": record.reason,
+            }
+            for record in records
+        ]
+
+    def _build_daily_skill_cards(
+        self,
+        *,
+        target_date: date,
+        skill_candidates: dict[str, dict[str, object]],
+        decisions: list[dict[str, object]],
+        skill_sync_payload: dict[str, object],
+        installed_inventory: dict[str, InstalledSkillRecord],
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        groups: dict[str, dict[str, object]] = {}
+        sync_actions = skill_sync_payload.get("actions", [])
+        normalized_actions = [item for item in sync_actions if isinstance(item, dict)]
+        for decision in decisions:
+            candidate = skill_candidates.get(str(decision.get("candidate_id", "")).strip())
+            if candidate is None:
+                continue
+            skill_id = self._normalize_skill_id(
+                str(decision.get("merge_target") or decision.get("canonical_name") or candidate.get("slug") or "")
+            )
+            if not skill_id:
+                continue
+            display_name = str(decision.get("canonical_name") or candidate.get("display_name") or skill_id).strip() or skill_id
+            group = groups.setdefault(
+                skill_id,
+                {
+                    "skill_id": skill_id,
+                    "display_name": display_name,
+                    "status": "pending_confirmation",
+                    "status_label": self._localize_status("pending_confirmation"),
+                    "purpose": str(candidate.get("description", "")).strip() or str(decision.get("reason", "")).strip() or "_无_",
+                    "installed_paths": [],
+                    "source_repositories": [],
+                    "merged_from": [],
+                    "evidence_files": [],
+                    "audit_status": None,
+                    "audit_verdict": None,
+                    "first_seen_at": target_date.isoformat(),
+                    "last_seen_at": target_date.isoformat(),
+                    "last_touched_at": target_date.isoformat(),
+                },
+            )
+            group["source_repositories"].append(str(candidate.get("repo_full_name", "")).strip())
+            group["merged_from"].append(str(candidate.get("slug", "")).strip() or str(candidate.get("candidate_id", "")).strip())
+            group["evidence_files"].extend(str(item).strip() for item in candidate.get("files", []) if str(item).strip())
+            action = self._match_sync_action(
+                skill_id=skill_id,
+                candidate_id=str(candidate.get("candidate_id", "")).strip(),
+                candidate_repo=str(candidate.get("repo_full_name", "")).strip(),
+                sync_actions=normalized_actions,
+            )
+            if bool(decision.get("accepted")) and (action or skill_id in installed_inventory):
+                group["status"] = "integrated"
+                group["status_label"] = self._localize_status("integrated")
+            if action is not None:
+                installed_path = action.get("installed_path") or action.get("matched_installed_path")
+                if isinstance(installed_path, str) and installed_path.strip():
+                    group["installed_paths"].append(installed_path.strip())
+                if action.get("audit_status"):
+                    group["audit_status"] = action.get("audit_status")
+                if action.get("audit_verdict"):
+                    group["audit_verdict"] = action.get("audit_verdict")
+
+        for skill_id, record in installed_inventory.items():
+            if skill_id not in groups:
+                continue
+            groups[skill_id]["installed_paths"].append(str(record.skill_dir))
+
+        cards = [
+            {
+                **value,
+                "source_repositories": sorted({repo for repo in value["source_repositories"] if repo}),
+                "merged_from": sorted({entry for entry in value["merged_from"] if entry}),
+                "evidence_files": sorted({path for path in value["evidence_files"] if path}),
+                "installed_paths": sorted({path for path in value["installed_paths"] if path}),
+            }
+            for value in groups.values()
+        ]
+        cards.sort(key=self._skill_highlight_sort_key)
+        discovered = [card for card in cards if card["status"] == "pending_confirmation"]
+        return cards, discovered
+
+    def _build_installed_skill_card(self, record: InstalledSkillRecord) -> dict[str, object]:
+        return {
+            "skill_id": record.slug,
+            "display_name": record.display_name,
+            "status": "integrated",
+            "status_label": self._localize_status("integrated"),
+            "purpose": record.description or "_无_",
+            "installed_paths": [str(record.skill_dir)],
+            "source_repositories": [record.managed_source_repo_full_name] if record.managed_source_repo_full_name else [],
+            "merged_from": list(record.aliases),
+            "audit_status": None,
+            "audit_verdict": None,
+        }
+
+    @staticmethod
+    def _match_sync_action(
+        *,
+        skill_id: str,
+        candidate_id: str,
+        candidate_repo: str,
+        sync_actions: list[dict[str, object]],
+    ) -> dict[str, object] | None:
+        del candidate_id
+        for action in sync_actions:
+            action_slug = str(action.get("slug", "")).strip()
+            matched_slug = str(action.get("matched_installed_slug", "")).strip()
+            action_repo = str(action.get("source_repo_full_name", "")).strip()
+            if action_repo != candidate_repo:
+                continue
+            if action_slug == skill_id or matched_slug == skill_id:
+                return action
+        return None
+
+    @staticmethod
+    def _normalize_skill_id(value: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+        return normalized.strip("-")
+
+    @staticmethod
+    def _skill_highlight_sort_key(card: dict[str, object]) -> tuple[int, int, str]:
+        status_order = {"pending_confirmation": 0, "integrated": 1}
+        return (
+            status_order.get(str(card.get("status", "")), 99),
+            -len(card.get("source_repositories", [])),
+            str(card.get("skill_id", "")).casefold(),
+        )
+
+    @staticmethod
+    def _render_path_list(paths: tuple[str, ...]) -> str:
+        if not paths:
+            return "_未集成_"
+        return "、".join(f"`{path}`" for path in paths)
+
+    @staticmethod
+    def _installed_skill_is_usable(record: InstalledSkillRecord) -> bool:
+        manifest = record.skill_dir / "SKILL.md"
+        if not manifest.exists():
+            return False
+        if not record.managed:
+            return True
+        try:
+            files = {
+                path.relative_to(record.skill_dir).as_posix()
+                for path in record.skill_dir.rglob("*")
+                if path.is_file()
+            }
+        except OSError:
+            return False
+        return files != {"SKILL.md", "haotian-wrapper.json"}
 
     def _load_taxonomy_gap_candidates(self, target_date: date) -> list[dict[str, object]]:
         path = self.run_dir / target_date.isoformat() / "taxonomy-gap-candidates.json"

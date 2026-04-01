@@ -414,6 +414,7 @@ class OrchestrationService:
                         repo_url=repo_url,
                         relative_root=package.relative_root or ".",
                         files=package.files,
+                        source_package_root=package.package_root,
                         description=str(item.get("description", "")).strip(),
                         matched_keywords=tuple(
                             str(keyword).strip()
@@ -460,6 +461,11 @@ class OrchestrationService:
                     repo_url=str(staged.get("repo_url", "")).strip(),
                     relative_root=str(staged.get("relative_root", ".")).strip() or ".",
                     files=tuple(str(item).strip() for item in staged.get("files", []) if str(item).strip()),
+                    source_package_root=(
+                        Path(str(staged.get("source_package_root", "")).strip())
+                        if str(staged.get("source_package_root", "")).strip()
+                        else None
+                    ),
                     description=str(staged.get("description", "")).strip(),
                     matched_keywords=tuple(
                         str(item).strip() for item in staged.get("matched_keywords", []) if str(item).strip()

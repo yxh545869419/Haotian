@@ -161,7 +161,7 @@ def _default_codex_skill_roots() -> tuple[Path, ...]:
 
 
 def _default_codex_managed_skill_root() -> Path:
-    return Path.home() / ".agents" / "skills" / "haotian-managed"
+    return Path("E:/CodexHome/skills/haotian-managed")
 
 
 def _default_skill_audit_script() -> Path | None:

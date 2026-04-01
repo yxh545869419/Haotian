@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,7 @@ from haotian.registry.capability_registry import (
     CapabilityRegistryRepository,
     CapabilityStatus,
 )
+from haotian.services.codex_skill_inventory_service import InstalledSkillRecord
 from haotian.services.report_service import ReportService
 
 
@@ -168,6 +170,50 @@ def _write_taxonomy_gap_candidates_payload(run_dir, *, report_date: str, payload
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _write_skill_candidates(run_dir, *, report_date: str, payload: dict[str, object]) -> None:
+    run_path = run_dir / report_date
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("skill-candidates.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _write_skill_merge_decisions(run_dir, *, report_date: str, payload: dict[str, object]) -> None:
+    run_path = run_dir / report_date
+    run_path.mkdir(parents=True, exist_ok=True)
+    run_path.joinpath("skill-merge-decisions.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+class FakeInventoryService:
+    def __init__(self, records: dict[str, InstalledSkillRecord]) -> None:
+        self.records = records
+
+    def scan(self) -> dict[str, InstalledSkillRecord]:
+        return dict(self.records)
+
+
+def _installed_skill_record(root: Path, slug: str, *, display_name: str, description: str = "") -> InstalledSkillRecord:
+    skill_dir = root / slug
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_dir.joinpath("SKILL.md").write_text(f"# {display_name}\n\n{description}\n", encoding="utf-8")
+    skill_dir.joinpath("README.md").write_text("# Readme\n", encoding="utf-8")
+    return InstalledSkillRecord(
+        slug=slug,
+        source_root=root.resolve(),
+        skill_dir=skill_dir.resolve(),
+        canonical_path=skill_dir.resolve(),
+        display_name=display_name,
+        description=description,
+        relative_path=slug,
+        root_index=0,
+        managed=False,
+    )
 def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'app.db'}"
     initialize_schema(database_url)
@@ -292,6 +338,198 @@ def test_report_service_aggregates_capabilities_and_repo_snapshots(tmp_path) -> 
     assert item["fallback_used"] is False
     assert item["cleanup_completed"] is True
     assert item["evidence_snippets"][0]["path"] == "README.md"
+
+
+def test_report_service_switches_to_skill_summary_when_skill_artifacts_exist(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'app.db'}"
+    initialize_schema(database_url)
+    report_dir = tmp_path / "reports"
+    run_dir = tmp_path / "runs"
+    skills_root = tmp_path / "skills"
+    inventory_service = FakeInventoryService(
+        {
+            "browser-bot": _installed_skill_record(
+                skills_root,
+                "browser-bot",
+                display_name="Browser Bot",
+                description="用于执行浏览器自动化流程。",
+            ),
+            "code-reviewer": _installed_skill_record(
+                skills_root,
+                "code-reviewer",
+                display_name="Code Reviewer",
+                description="用于审查代码改动。",
+            ),
+        }
+    )
+    with get_connection(database_url) as connection:
+        connection.executemany(
+            """
+            INSERT INTO trending_repos (
+                snapshot_date,
+                period,
+                rank,
+                repo_full_name,
+                repo_url,
+                description,
+                language,
+                stars,
+                forks
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("2026-03-25", "daily", 1, "acme/browser-bot", "https://github.com/acme/browser-bot", None, None, 10, 1),
+                ("2026-03-25", "daily", 2, "contoso/browser-bot", "https://github.com/contoso/browser-bot", None, None, 10, 1),
+                ("2026-03-25", "daily", 3, "acme/security-audit", "https://github.com/acme/security-audit", None, None, 10, 1),
+            ],
+        )
+        connection.commit()
+
+    _write_skill_candidates(
+        run_dir,
+        report_date="2026-03-25",
+        payload={
+            "schema_version": 1,
+            "analysis_format": "skill-discovery-v1",
+            "report_date": "2026-03-25",
+            "expected_output_filename": "skill-merge-decisions.json",
+            "candidates": [
+                {
+                    "candidate_id": "cand-browser-1",
+                    "slug": "browser-bot",
+                    "display_name": "Browser Bot",
+                    "repo_full_name": "acme/browser-bot",
+                    "repo_url": "https://github.com/acme/browser-bot",
+                    "relative_root": "skills/browser-bot",
+                    "files": ["SKILL.md", "README.md", "settings.json"],
+                    "description": "用于执行浏览器自动化流程。",
+                    "matched_keywords": ["SKILL.md", "README.md"],
+                    "architecture_signals": ["codex-skill-package"],
+                },
+                {
+                    "candidate_id": "cand-browser-2",
+                    "slug": "browser-bot",
+                    "display_name": "Browser Bot",
+                    "repo_full_name": "contoso/browser-bot",
+                    "repo_url": "https://github.com/contoso/browser-bot",
+                    "relative_root": "skills/browser-bot",
+                    "files": ["SKILL.md", "README.md"],
+                    "description": "用于执行浏览器自动化流程。",
+                    "matched_keywords": ["SKILL.md", "README.md"],
+                    "architecture_signals": ["codex-skill-package"],
+                },
+                {
+                    "candidate_id": "cand-security-1",
+                    "slug": "security-analysis",
+                    "display_name": "Security Analysis",
+                    "repo_full_name": "acme/security-audit",
+                    "repo_url": "https://github.com/acme/security-audit",
+                    "relative_root": "skills/security-analysis",
+                    "files": ["SKILL.md", "README.md"],
+                    "description": "用于执行漏洞与配置检查。",
+                    "matched_keywords": ["SKILL.md"],
+                    "architecture_signals": ["codex-skill-package"],
+                },
+            ],
+        },
+    )
+    _write_skill_merge_decisions(
+        run_dir,
+        report_date="2026-03-25",
+        payload={
+            "schema_version": 1,
+            "report_date": "2026-03-25",
+            "decisions": [
+                {
+                    "candidate_id": "cand-browser-1",
+                    "decision": "accept",
+                    "canonical_name": "Browser Bot",
+                    "merge_target": "browser-bot",
+                    "accepted": True,
+                    "reason": "与已安装 skill 对齐。",
+                },
+                {
+                    "candidate_id": "cand-browser-2",
+                    "decision": "accept",
+                    "canonical_name": "Browser Bot",
+                    "merge_target": "browser-bot",
+                    "accepted": True,
+                    "reason": "与同名 skill 合并。",
+                },
+                {
+                    "candidate_id": "cand-security-1",
+                    "decision": "review",
+                    "canonical_name": "Security Analysis",
+                    "merge_target": "security-analysis",
+                    "accepted": False,
+                    "reason": "还需要 Codex 复核。",
+                },
+            ],
+        },
+    )
+    run_path = run_dir / "2026-03-25"
+    run_path.joinpath("skill-sync-report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "report_date": "2026-03-25",
+                "summary": {
+                    "config_ready": True,
+                    "candidate_count": 2,
+                    "action_count": 1,
+                    "aligned_existing": 1,
+                    "installed_new": 0,
+                    "discarded_non_integrable": 0,
+                    "blocked_audit_failure": 0,
+                    "blocked_ambiguous_match": 0,
+                    "rolled_back_install_failure": 0,
+                },
+                "actions": [
+                    {
+                        "action": "aligned_existing",
+                        "slug": "browser-bot",
+                        "display_name": "Browser Bot",
+                        "source_repo_full_name": "acme/browser-bot",
+                        "repo_url": "https://github.com/acme/browser-bot",
+                        "relative_root": "skills/browser-bot",
+                        "files": ["SKILL.md", "README.md"],
+                        "matched_installed_slug": "browser-bot",
+                        "matched_installed_path": str((skills_root / "browser-bot").resolve()),
+                        "reason": "已对齐现有 skill。",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service = ReportService(
+        database_url=database_url,
+        report_dir=report_dir,
+        run_dir=run_dir,
+        inventory_service=inventory_service,
+    )
+
+    markdown = service.generate_daily_report("2026-03-25").read_text(encoding="utf-8")
+    payload = json.loads(service.generate_daily_report_json("2026-03-25").read_text(encoding="utf-8"))
+
+    assert payload["report_format"] == "skill-summary-v1"
+    assert payload["daily_skill_summary"]["merged_skills"] == 2
+    assert payload["daily_skill_summary"]["integrated_skills"] == 1
+    assert payload["daily_skill_summary"]["pending_skills"] == 1
+    assert payload["daily_skill_summary"]["installed_inventory"] == 2
+    merged_by_id = {item["skill_id"]: item for item in payload["merged_skill_cards"]}
+    discovered_by_id = {item["skill_id"]: item for item in payload["discovered_skill_cards"]}
+    assert merged_by_id["browser-bot"]["status_label"] == "已集成"
+    assert merged_by_id["browser-bot"]["source_repositories"] == ["acme/browser-bot", "contoso/browser-bot"]
+    assert discovered_by_id["security-analysis"]["status_label"] == "需确认"
+    assert payload["installed_skill_cards"][0]["installed_paths"]
+    assert "## Skill 摘要" in markdown
+    assert "### Browser Bot (`browser-bot`)" in markdown
+    assert "来源仓库：`acme/browser-bot`、`contoso/browser-bot`" in markdown
+    assert "## 当前已集成 Skills" in markdown
 
 
 def test_report_payload_includes_taxonomy_gap_summary(tmp_path) -> None:
