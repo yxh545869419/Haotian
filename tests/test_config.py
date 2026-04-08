@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from haotian.config import PROJECT_ROOT
 from haotian.config import Settings
+from haotian.config import _default_codex_skill_roots
 from haotian.config import _default_codex_managed_skill_root
 from haotian.config import get_settings
 
@@ -87,6 +88,12 @@ def test_get_settings_autodiscovers_skill_sync_defaults(monkeypatch, tmp_path) -
 
 def test_default_codex_managed_skill_root_uses_e_drive() -> None:
     assert _default_codex_managed_skill_root() == Path("E:/CodexHome/skills/haotian-managed")
+
+
+def test_default_codex_skill_roots_include_real_superpowers_root_when_present() -> None:
+    superpowers_root = Path("E:/CodexHome/superpowers/skills")
+    if superpowers_root.exists():
+        assert superpowers_root.resolve() in _default_codex_skill_roots()
 
 
 def test_settings_include_repo_analysis_defaults(monkeypatch) -> None:

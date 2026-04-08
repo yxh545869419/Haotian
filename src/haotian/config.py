@@ -145,6 +145,7 @@ def _default_codex_skill_roots() -> tuple[Path, ...]:
         home / ".agents" / "skills",
         home / ".codex" / "skills",
         Path("E:/CodexHome/skills"),
+        Path("E:/CodexHome/superpowers/skills"),
     )
     resolved: list[Path] = []
     seen: set[str] = set()
