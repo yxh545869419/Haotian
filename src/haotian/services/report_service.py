@@ -811,13 +811,16 @@ class ReportService:
                 candidate_repo=str(candidate.get("repo_full_name", "")).strip(),
                 sync_actions=normalized_actions,
             )
-            if bool(decision.get("accepted")) and (action or skill_id in installed_inventory):
+            action_installed_path = self._valid_action_installed_path(
+                action=action,
+                installed_inventory=installed_inventory,
+            )
+            if bool(decision.get("accepted")) and (action_installed_path or skill_id in installed_inventory):
                 group["status"] = "integrated"
                 group["status_label"] = self._localize_status("integrated")
             if action is not None:
-                installed_path = action.get("installed_path") or action.get("matched_installed_path")
-                if isinstance(installed_path, str) and installed_path.strip():
-                    group["installed_paths"].append(installed_path.strip())
+                if action_installed_path:
+                    group["installed_paths"].append(action_installed_path)
                 if action.get("audit_status"):
                     group["audit_status"] = action.get("audit_status")
                 if action.get("audit_verdict"):
@@ -876,6 +879,36 @@ class ReportService:
         return None
 
     @staticmethod
+    def _valid_action_installed_path(
+        *,
+        action: dict[str, object] | None,
+        installed_inventory: dict[str, InstalledSkillRecord],
+    ) -> str | None:
+        if action is None:
+            return None
+
+        for slug_key in ("matched_installed_slug", "slug"):
+            slug = str(action.get(slug_key, "")).strip()
+            if slug in installed_inventory:
+                return str(installed_inventory[slug].skill_dir)
+
+        candidate_paths = (
+            action.get("installed_path"),
+            action.get("matched_installed_path"),
+        )
+        installed_paths = {
+            record.skill_dir.resolve(strict=False): str(record.skill_dir)
+            for record in installed_inventory.values()
+        }
+        for candidate in candidate_paths:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            resolved = Path(candidate).resolve(strict=False)
+            if resolved in installed_paths:
+                return installed_paths[resolved]
+        return None
+
+    @staticmethod
     def _normalize_skill_id(value: str) -> str:
         normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
         return normalized.strip("-")
@@ -900,8 +933,6 @@ class ReportService:
         manifest = record.skill_dir / "SKILL.md"
         if not manifest.exists():
             return False
-        if not record.managed:
-            return True
         try:
             files = {
                 path.relative_to(record.skill_dir).as_posix()
@@ -910,7 +941,9 @@ class ReportService:
             }
         except OSError:
             return False
-        return files != {"SKILL.md", "haotian-wrapper.json"}
+        if files == {"SKILL.md", "haotian-wrapper.json"}:
+            return False
+        return True
 
     def _load_taxonomy_gap_candidates(self, target_date: date) -> list[dict[str, object]]:
         path = self.run_dir / target_date.isoformat() / "taxonomy-gap-candidates.json"
