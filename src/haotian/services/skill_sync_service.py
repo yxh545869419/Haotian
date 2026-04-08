@@ -240,6 +240,25 @@ class SkillSyncService:
                     install_slug=matched_record.slug,
                     target_dir_override=matched_record.skill_dir,
                 )
+            if self._is_trusted_builtin_record(matched_record):
+                removed_redundant = self._remove_redundant_managed_matches(
+                    candidate=candidate,
+                    matched_record=matched_record,
+                    inventory_records=tuple(inventory_records.values()),
+                )
+                reason = "A trusted built-in installed skill already satisfies this candidate."
+                if removed_redundant:
+                    reason += f" Removed {removed_redundant} redundant managed duplicate(s)."
+                return self._action(
+                    candidate,
+                    "aligned_existing",
+                    slug=install_slug,
+                    matched_installed_slug=matched_record.slug,
+                    matched_installed_path=str(matched_record.skill_dir),
+                    audit_status="trusted",
+                    audit_verdict="TRUSTED",
+                    reason=reason,
+                )
             if self.audit_service is None:
                 return self._action(
                     candidate,
@@ -261,6 +280,16 @@ class SkillSyncService:
                     audit_verdict=str(getattr(audit_result, "overall_verdict", "")),
                     reason="The matched installed skill did not pass audit.",
                 )
+            removed_redundant = 0
+            if not matched_record.managed:
+                removed_redundant = self._remove_redundant_managed_matches(
+                    candidate=candidate,
+                    matched_record=matched_record,
+                    inventory_records=tuple(inventory_records.values()),
+                )
+            reason = "A unique installed skill already satisfies this candidate."
+            if removed_redundant:
+                reason += f" Removed {removed_redundant} redundant managed duplicate(s)."
             return self._action(
                 candidate,
                 "aligned_existing",
@@ -269,7 +298,7 @@ class SkillSyncService:
                 matched_installed_path=str(matched_record.skill_dir),
                 audit_status=str(getattr(audit_result, "status", "")),
                 audit_verdict=str(getattr(audit_result, "overall_verdict", "")),
-                reason="A unique installed skill already satisfies this candidate.",
+                reason=reason,
             )
 
         if self.managed_root is None or self.audit_service is None:
@@ -381,8 +410,8 @@ class SkillSyncService:
             exact_matches.append(
                 (
                     rank,
+                    1 if record.managed else 0,
                     record.root_index,
-                    0 if record.managed else 1,
                     record.slug.casefold(),
                     record.display_name.casefold(),
                     record,
@@ -406,8 +435,8 @@ class SkillSyncService:
         scored.sort(
             key=lambda item: (
                 -item[0],
+                1 if item[1].managed else 0,
                 item[1].root_index,
-                0 if item[1].managed else 1,
                 item[1].slug.casefold(),
                 item[1].display_name.casefold(),
             )
@@ -421,6 +450,53 @@ class SkillSyncService:
         if candidate_tokens & SkillSyncService._record_alias_tokens(record):
             return 1
         return None
+
+    def _remove_redundant_managed_matches(
+        self,
+        *,
+        candidate: SkillSyncCandidate,
+        matched_record: InstalledSkillRecord,
+        inventory_records: tuple[InstalledSkillRecord, ...],
+    ) -> int:
+        if self.managed_root is None:
+            return 0
+        candidate_tokens = self._candidate_exact_tokens(candidate)
+        removed = 0
+        for record in inventory_records:
+            if not record.managed or record.skill_dir == matched_record.skill_dir:
+                continue
+            if not self._record_can_match_candidate(candidate, record):
+                continue
+            if self._exact_match_rank(candidate_tokens, record) is None:
+                continue
+            if not self._managed_record_is_removable(record):
+                continue
+            try:
+                shutil.rmtree(record.skill_dir, ignore_errors=False)
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
+    def _managed_record_is_removable(self, record: InstalledSkillRecord) -> bool:
+        if self.managed_root is None:
+            return False
+        try:
+            managed_root = self.managed_root.resolve(strict=False)
+            record_dir = record.skill_dir.resolve(strict=False)
+        except OSError:
+            return False
+        try:
+            record_dir.relative_to(managed_root)
+        except ValueError:
+            return False
+        return record_dir != managed_root and not self._is_alias_path(record.skill_dir)
+
+    @staticmethod
+    def _is_trusted_builtin_record(record: InstalledSkillRecord) -> bool:
+        if record.managed:
+            return False
+        return any(part.casefold() == ".system" for part in record.skill_dir.parts)
 
     @staticmethod
     def _record_canonical_tokens(record: InstalledSkillRecord) -> set[str]:
@@ -470,7 +546,7 @@ class SkillSyncService:
 
     @staticmethod
     def _candidate_exact_tokens(candidate: SkillSyncCandidate) -> set[str]:
-        return {
+        tokens = {
             token
             for token in (
                 SkillSyncService._normalized_token(candidate.slug),
@@ -478,6 +554,17 @@ class SkillSyncService:
             )
             if token
         }
+        tokens.update(SkillSyncService._semantic_alias_tokens(candidate.slug, candidate.display_name))
+        return tokens
+
+    @staticmethod
+    def _semantic_alias_tokens(*values: str) -> set[str]:
+        """Map common equivalent skill names to installed canonical skill slugs."""
+        name_tokens = SkillSyncService._expanded_token_set(*values)
+        if "skill" in name_tokens or "skills" in name_tokens:
+            if {"write", "writing", "create", "creator", "build"} & name_tokens:
+                return {"skill-creator"}
+        return set()
 
     @staticmethod
     def _candidate_similarity_tokens(candidate: SkillSyncCandidate) -> set[str]:

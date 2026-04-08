@@ -576,10 +576,7 @@ class ReportService:
             skill_sync_payload=skill_sync_payload,
             installed_inventory=installed_inventory,
         )
-        installed_skill_cards = [
-            self._build_installed_skill_card(record)
-            for record in sorted(installed_inventory.values(), key=lambda item: item.display_name.casefold())
-        ]
+        installed_skill_cards = self._build_installed_skill_cards(installed_inventory)
         integrated_count = sum(1 for card in merged_skill_cards if card["status"] == "integrated")
         pending_count = sum(1 for card in merged_skill_cards if card["status"] == "pending_confirmation")
         summary = {
@@ -782,7 +779,20 @@ class ReportService:
             )
             if not skill_id:
                 continue
-            display_name = str(decision.get("canonical_name") or candidate.get("display_name") or skill_id).strip() or skill_id
+            installed_record = installed_inventory.get(skill_id)
+            display_name = (
+                installed_record.display_name
+                if installed_record is not None
+                else self._display_name_for_skill_id(
+                    skill_id,
+                    str(decision.get("canonical_name") or candidate.get("display_name") or skill_id).strip() or skill_id,
+                )
+            )
+            purpose = (
+                installed_record.description
+                if installed_record is not None and installed_record.description
+                else str(candidate.get("description", "")).strip() or str(decision.get("reason", "")).strip() or "_无_"
+            )
             group = groups.setdefault(
                 skill_id,
                 {
@@ -790,7 +800,7 @@ class ReportService:
                     "display_name": display_name,
                     "status": "pending_confirmation",
                     "status_label": self._localize_status("pending_confirmation"),
-                    "purpose": str(candidate.get("description", "")).strip() or str(decision.get("reason", "")).strip() or "_无_",
+                    "purpose": purpose,
                     "installed_paths": [],
                     "source_repositories": [],
                     "merged_from": [],
@@ -847,8 +857,9 @@ class ReportService:
         return cards, discovered
 
     def _build_installed_skill_card(self, record: InstalledSkillRecord) -> dict[str, object]:
+        source_skill_id = record.managed_wrapper_slug or record.slug
         return {
-            "skill_id": record.slug,
+            "skill_id": self._normalize_skill_id(source_skill_id),
             "display_name": record.display_name,
             "status": "integrated",
             "status_label": self._localize_status("integrated"),
@@ -859,6 +870,37 @@ class ReportService:
             "audit_status": None,
             "audit_verdict": None,
         }
+
+    def _build_installed_skill_cards(self, installed_inventory: dict[str, InstalledSkillRecord]) -> list[dict[str, object]]:
+        groups: dict[str, dict[str, object]] = {}
+        for record in sorted(installed_inventory.values(), key=lambda item: item.display_name.casefold()):
+            card = self._build_installed_skill_card(record)
+            skill_id = str(card["skill_id"])
+            group = groups.setdefault(
+                skill_id,
+                {
+                    **card,
+                    "installed_paths": [],
+                    "source_repositories": [],
+                    "merged_from": [],
+                },
+            )
+            if record.slug == skill_id:
+                group["display_name"] = record.display_name
+                group["purpose"] = record.description or group["purpose"]
+            group["installed_paths"].extend(card["installed_paths"])
+            group["source_repositories"].extend(card["source_repositories"])
+            if record.slug != skill_id:
+                group["merged_from"].append(record.slug)
+            group["merged_from"].extend(card["merged_from"])
+        cards = []
+        for group in groups.values():
+            group["installed_paths"] = sorted({path for path in group["installed_paths"] if path})
+            group["source_repositories"] = sorted({repo for repo in group["source_repositories"] if repo})
+            group["merged_from"] = sorted({source for source in group["merged_from"] if source})
+            cards.append(group)
+        cards.sort(key=lambda item: str(item["display_name"]).casefold())
+        return cards
 
     @staticmethod
     def _match_sync_action(
@@ -912,10 +954,24 @@ class ReportService:
                 return installed_paths[resolved]
         return None
 
-    @staticmethod
-    def _normalize_skill_id(value: str) -> str:
+    @classmethod
+    def _normalize_skill_id(cls, value: str) -> str:
         normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
-        return normalized.strip("-")
+        return cls._canonical_skill_alias(normalized.strip("-"))
+
+    @staticmethod
+    def _canonical_skill_alias(skill_id: str) -> str:
+        tokens = {part for part in skill_id.split("-") if part}
+        if {"skill", "skills"} & tokens and {"write", "writing", "create", "creator", "build"} & tokens:
+            return "skill-creator"
+        return skill_id
+
+    @classmethod
+    def _display_name_for_skill_id(cls, skill_id: str, fallback: str) -> str:
+        fallback_id = re.sub(r"[^a-z0-9]+", "-", fallback.strip().lower()).strip("-")
+        if fallback_id == skill_id and fallback != skill_id:
+            return fallback
+        return skill_id
 
     @staticmethod
     def _skill_highlight_sort_key(card: dict[str, object]) -> tuple[int, int, str]:

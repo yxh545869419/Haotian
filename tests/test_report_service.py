@@ -198,7 +198,14 @@ class FakeInventoryService:
         return dict(self.records)
 
 
-def _installed_skill_record(root: Path, slug: str, *, display_name: str, description: str = "") -> InstalledSkillRecord:
+def _installed_skill_record(
+    root: Path,
+    slug: str,
+    *,
+    display_name: str,
+    description: str = "",
+    managed_wrapper_slug: str | None = None,
+) -> InstalledSkillRecord:
     skill_dir = root / slug
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_dir.joinpath("SKILL.md").write_text(f"# {display_name}\n\n{description}\n", encoding="utf-8")
@@ -212,7 +219,11 @@ def _installed_skill_record(root: Path, slug: str, *, display_name: str, descrip
         description=description,
         relative_path=slug,
         root_index=0,
-        managed=False,
+        managed=managed_wrapper_slug is not None,
+        aliases=(managed_wrapper_slug,) if managed_wrapper_slug and managed_wrapper_slug != slug else (),
+        managed_source_repo_full_name="acme/skills" if managed_wrapper_slug else None,
+        managed_wrapper_slug=managed_wrapper_slug,
+        managed_relative_root=managed_wrapper_slug,
     )
 
 
@@ -553,6 +564,50 @@ def test_report_service_switches_to_skill_summary_when_skill_artifacts_exist(tmp
     assert "### Browser Bot (`browser-bot`)" in markdown
     assert "来源仓库：`acme/browser-bot`、`contoso/browser-bot`" in markdown
     assert "## 当前已集成 Skills" in markdown
+
+
+def test_installed_skill_cards_merge_skill_creator_aliases(tmp_path) -> None:
+    skills_root = tmp_path / "skills"
+    service = ReportService(inventory_service=FakeInventoryService({}))
+    assert service._display_name_for_skill_id("skill-creator", "write-a-skill") == "skill-creator"
+    assert service._display_name_for_skill_id("skill-creator", "writing-skills") == "skill-creator"
+    assert service._display_name_for_skill_id("browser-bot", "Browser Bot") == "Browser Bot"
+    skill_creator = _installed_skill_record(
+        skills_root / ".system",
+        "skill-creator",
+        display_name="skill-creator",
+        description="Guide for creating effective skills.",
+    )
+    writing_skills = _installed_skill_record(
+        skills_root / "superpowers",
+        "writing-skills",
+        display_name="writing-skills",
+        description="Use when creating new skills.",
+    )
+    write_prd = _installed_skill_record(
+        skills_root / "managed",
+        "mattpocock-skills-write-a-prd-e16ece4549",
+        display_name="write-a-prd",
+        description="Create a PRD.",
+        managed_wrapper_slug="write-a-prd",
+    )
+
+    cards = service._build_installed_skill_cards(
+        {
+            "skill-creator": skill_creator,
+            "writing-skills": writing_skills,
+            "mattpocock-skills-write-a-prd-e16ece4549": write_prd,
+        }
+    )
+
+    by_id = {str(card["skill_id"]): card for card in cards}
+    assert "skill-creator" in by_id
+    assert "writing-skills" not in by_id
+    assert "write-a-prd" in by_id
+    assert by_id["skill-creator"]["merged_from"] == ["writing-skills"]
+    assert sorted(by_id["skill-creator"]["installed_paths"]) == sorted(
+        [str(skill_creator.skill_dir), str(writing_skills.skill_dir)]
+    )
 
 
 def test_skill_summary_ignores_stale_wrapper_only_inventory(tmp_path) -> None:

@@ -574,6 +574,87 @@ def test_skill_sync_aligns_audited_unmanaged_exact_name_match(tmp_path) -> None:
     assert audit_service.calls == [existing.skill_dir]
 
 
+def test_skill_sync_prefers_skill_creator_for_write_a_skill_alias(tmp_path) -> None:
+    shared_root = tmp_path / "shared" / ".system"
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+    skill_creator = _installed(
+        shared_root,
+        "skill-creator",
+        display_name="skill-creator",
+        managed=False,
+    )
+    managed_write_a_skill = _installed(
+        managed_root,
+        "mattpocock-skills-write-a-skill-5ca242852c",
+        display_name="write-a-skill",
+        managed=True,
+        source_repo_full_name="mattpocock/skills",
+        relative_root="write-a-skill",
+        wrapper_slug="write-a-skill",
+        full_package=True,
+    )
+
+    result = service.sync(
+        report_date=date(2026, 4, 8),
+        candidates=[
+            _candidate(
+                "write-a-skill",
+                display_name="write-a-skill",
+                source_repo_full_name="mattpocock/skills",
+                relative_root="write-a-skill",
+                source_package_root=managed_write_a_skill.skill_dir,
+                description="Create new agent skills with proper structure.",
+            )
+        ],
+        inventory={
+            "skill-creator": skill_creator,
+            "mattpocock-skills-write-a-skill-5ca242852c": managed_write_a_skill,
+        },
+    )
+
+    assert result.actions[0].action == "aligned_existing"
+    assert result.actions[0].matched_installed_slug == "skill-creator"
+    assert result.actions[0].audit_status == "trusted"
+    assert "Removed 1 redundant managed duplicate" in result.actions[0].reason
+    assert not managed_write_a_skill.skill_dir.exists()
+    assert audit_service.calls == []
+
+
+def test_skill_sync_does_not_merge_writer_memory_into_skill_creator(tmp_path) -> None:
+    shared_root = tmp_path / "shared"
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+    source_root = _source_package_root(tmp_path, "writer-memory")
+
+    result = service.sync(
+        report_date=date(2026, 4, 8),
+        candidates=[
+            _candidate(
+                "writer-memory",
+                display_name="writer-memory",
+                source_repo_full_name="yeachan-heo/oh-my-claudecode",
+                relative_root="writer-memory",
+                source_package_root=source_root,
+                description="Agentic memory system for writers.",
+            )
+        ],
+        inventory={
+            "skill-creator": _installed(
+                shared_root,
+                "skill-creator",
+                display_name="skill-creator",
+                managed=False,
+            )
+        },
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].matched_installed_slug is None
+
+
 def test_skill_sync_does_not_align_unmanaged_fuzzy_match(tmp_path) -> None:
     shared_root = tmp_path / "shared"
     managed_root = tmp_path / "managed"
