@@ -320,6 +320,37 @@ def test_skill_sync_discards_lone_skill_manifest_without_support_files_or_runtim
     assert audit_service.calls == []
 
 
+def test_skill_sync_installs_lone_skill_manifest_when_full_source_package_exists(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, audit_service=audit_service)
+    source_root = tmp_path / "source" / "manifest-only"
+    source_root.mkdir(parents=True)
+    source_root.joinpath("SKILL.md").write_text("# Manifest Only\n\nUseful instructions.\n", encoding="utf-8")
+
+    result = service.sync(
+        report_date=date(2026, 3, 25),
+        candidates=[
+            _candidate(
+                "manifest-only",
+                files=("SKILL.md",),
+                source_package_root=source_root,
+                relative_root="skills/manifest-only",
+                matched_keywords=("SKILL.md",),
+                architecture_signals=("codex-skill-package",),
+            )
+        ],
+        inventory={},
+    )
+
+    assert result.actions[0].action == "installed_new"
+    assert result.actions[0].installed_path is not None
+    installed_path = Path(result.actions[0].installed_path)
+    assert installed_path.joinpath("SKILL.md").exists()
+    assert not service._is_wrapper_only_install(installed_path)
+    assert len(audit_service.calls) == 1
+
+
 def test_skill_sync_accepts_manifest_with_readme_and_settings_as_supporting_evidence(tmp_path) -> None:
     managed_root = tmp_path / "managed"
     audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))

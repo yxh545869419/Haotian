@@ -578,7 +578,7 @@ class SkillSyncService:
         return (
             "SKILL.md" in candidate.files
             and SkillSyncService._is_safe_relative_root(candidate.relative_root)
-            and SkillSyncService._has_support_files(candidate.files)
+            and (SkillSyncService._has_support_files(candidate.files) or candidate.source_package_root is not None)
         )
 
     @staticmethod
@@ -715,13 +715,32 @@ class SkillSyncService:
             for path in skill_dir.iterdir()
             if path.is_file()
         }
-        return file_names <= {"skill.md", "haotian-wrapper.json"}
+        if not file_names <= {"skill.md", "haotian-wrapper.json"}:
+            return False
+        metadata = SkillSyncService._read_managed_metadata(skill_dir)
+        if metadata.get("install_type") == "full-package":
+            return False
+        if metadata.get("files") == ["SKILL.md"] and metadata.get("source_repo_full_name"):
+            return False
+        return True
+
+    @staticmethod
+    def _read_managed_metadata(skill_dir: Path) -> dict[str, object]:
+        metadata_path = skill_dir / "haotian-wrapper.json"
+        if not metadata_path.exists():
+            return {}
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     @staticmethod
     def _write_managed_metadata(staging_dir: Path, candidate: SkillSyncCandidate) -> None:
         metadata = {
             "schema_version": 1,
             "managed_by": "haotian",
+            "install_type": "full-package",
             "slug": candidate.slug,
             "display_name": candidate.display_name.strip() or candidate.slug,
             "source_repo_full_name": candidate.source_repo_full_name,

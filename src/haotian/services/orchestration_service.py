@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -24,6 +24,7 @@ from haotian.registry.capability_registry import (
     CapabilityStatus,
 )
 from haotian.services.classification_artifact_service import (
+    AUTO_SKILL_DECISION_POLICY_VERSION,
     ClassificationArtifactService,
     RepoClassificationRecord,
     SkillMergeDecisionRecord,
@@ -196,9 +197,22 @@ class OrchestrationService:
                 items=items,
             )
             skill_candidates = self.repository_skill_candidate_service.extract(items)
+            skill_candidate_payloads = [candidate.to_payload() for candidate in skill_candidates]
             result.skill_candidates_path = self.artifact_service.write_skill_candidates_input(
                 report_date=target_date.isoformat(),
-                candidates=[candidate.to_payload() for candidate in skill_candidates],
+                candidates=skill_candidate_payloads,
+            )
+            auto_decisions = self._build_auto_skill_merge_decisions(candidates=skill_candidate_payloads)
+            if auto_decisions:
+                self.artifact_service.write_json_artifact(
+                    path=self.artifact_service.skill_merge_decisions_path(target_date.isoformat()),
+                    payload={
+                    "schema_version": 1,
+                    "report_date": target_date.isoformat(),
+                    "decision_mode": "auto",
+                    "auto_policy_version": AUTO_SKILL_DECISION_POLICY_VERSION,
+                    "decisions": auto_decisions,
+                },
             )
             LOGGER.info("[stage] wrote classification input to %s", result.classification_input_path)
         except Exception as exc:  # noqa: BLE001
@@ -479,6 +493,67 @@ class OrchestrationService:
         accepted_candidates.sort(key=lambda item: (item.slug.casefold(), item.source_repo_full_name.casefold(), item.relative_root.casefold()))
         return accepted_candidates
 
+    def _build_auto_skill_merge_decisions(self, *, candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+        decisions: list[dict[str, object]] = []
+        candidate_counts_by_repo = Counter(str(candidate.get("repo_full_name", "")).strip() for candidate in candidates)
+        for candidate in candidates:
+            repo_full_name = str(candidate.get("repo_full_name", "")).strip()
+            if not self._is_auto_installable_skill_candidate(
+                candidate,
+                repo_candidate_count=candidate_counts_by_repo[repo_full_name],
+            ):
+                continue
+            slug = self._slug_from_name(str(candidate.get("slug", "")))
+            display_name = str(candidate.get("display_name") or slug).strip() or slug
+            decisions.append(
+                {
+                    "candidate_id": str(candidate.get("candidate_id", "")).strip(),
+                    "decision": "install",
+                    "canonical_name": display_name,
+                    "merge_target": slug,
+                    "accepted": True,
+                    "reason": "自动接纳：候选是目录级 Codex skill 包，包含 SKILL.md，且源包目录可用于审计安装。",
+                }
+            )
+        decisions.sort(key=lambda item: (str(item["merge_target"]).casefold(), str(item["candidate_id"]).casefold()))
+        return decisions
+
+    @staticmethod
+    def _is_auto_installable_skill_candidate(
+        candidate: dict[str, object],
+        *,
+        repo_candidate_count: int,
+    ) -> bool:
+        candidate_id = str(candidate.get("candidate_id", "")).strip()
+        slug = OrchestrationService._slug_from_name(str(candidate.get("slug", "")))
+        repo_full_name = str(candidate.get("repo_full_name", "")).strip()
+        relative_root = str(candidate.get("relative_root", "")).strip().replace("\\", "/")
+        source_package_root = str(candidate.get("source_package_root", "")).strip()
+        files = tuple(str(item).strip().replace("\\", "/") for item in candidate.get("files", []) if str(item).strip())
+        if not candidate_id or not slug or not source_package_root:
+            return False
+        if relative_root in {"", "."}:
+            return False
+        if "SKILL.md" not in files:
+            return False
+        if len(files) > 64:
+            return False
+        if not SkillSyncService._is_safe_relative_root(relative_root):
+            return False
+        if not OrchestrationService._repo_name_looks_like_skill_source(repo_full_name):
+            return False
+        del repo_candidate_count
+        try:
+            return Path(source_package_root).resolve(strict=True).is_dir()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _repo_name_looks_like_skill_source(repo_full_name: str) -> bool:
+        repo_name = repo_full_name.rsplit("/", 1)[-1].casefold()
+        skill_source_markers = ("skill", "skills", "codex", "claude-code", "claudecode", "superpowers")
+        return any(marker in repo_name for marker in skill_source_markers)
+
     def _build_active_capability_skill_candidates(
         self,
         capability_ids_by_repo: dict[str, tuple[str, ...]],
@@ -587,8 +662,9 @@ class OrchestrationService:
                 cached=cached,
                 current_pushed_at=getattr(supplemental, "pushed_at", None),
             ):
-                analysis_results_by_repo[repo_full_name] = cached.to_reused_result(repo_url=str(entry["repo_url"]))
-                continue
+                if self._cached_skill_package_sources_are_reusable(cached.discovered_skill_packages):
+                    analysis_results_by_repo[repo_full_name] = cached.to_reused_result(repo_url=str(entry["repo_url"]))
+                    continue
             fresh_queue.append((repo_full_name, entry, supplemental))
 
         batch_size = self._resolve_analysis_batch_size()
@@ -666,12 +742,28 @@ class OrchestrationService:
             and not result.fallback_used
         )
 
+    @staticmethod
+    def _cached_skill_package_sources_are_reusable(packages: tuple[DiscoveredSkillPackage, ...]) -> bool:
+        for package in packages:
+            if package.relative_root.strip() in {"", "."}:
+                continue
+            try:
+                if not package.package_root.resolve(strict=True).is_dir():
+                    return False
+            except OSError:
+                return False
+        return True
+
     def _resolve_repository_analysis_service(self, report_date: date) -> RepositoryAnalysisService:
         if self.repository_analysis_service is not None:
             return self.repository_analysis_service
         settings = get_settings()
         base_dir = self.repository_tmp_dir or settings.tmp_repo_dir
-        return RepositoryAnalysisService(run_label=report_date.isoformat(), base_dir=base_dir)
+        return RepositoryAnalysisService(
+            run_label=report_date.isoformat(),
+            base_dir=base_dir,
+            skill_package_snapshot_dir=self.artifact_service.run_dir(report_date.isoformat()) / "skill-package-sources",
+        )
 
     def _load_repo_analysis_counters(self, report_date: date) -> dict[str, int]:
         counters = {

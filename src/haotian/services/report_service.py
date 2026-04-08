@@ -942,8 +942,23 @@ class ReportService:
         except OSError:
             return False
         if files == {"SKILL.md", "haotian-wrapper.json"}:
-            return False
+            return ReportService._managed_metadata_marks_full_package(record.skill_dir)
         return True
+
+    @staticmethod
+    def _managed_metadata_marks_full_package(skill_dir: Path) -> bool:
+        metadata_path = skill_dir / "haotian-wrapper.json"
+        if not metadata_path.exists():
+            return False
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("install_type") == "full-package":
+            return True
+        return payload.get("files") == ["SKILL.md"] and bool(payload.get("source_repo_full_name"))
 
     def _load_taxonomy_gap_candidates(self, target_date: date) -> list[dict[str, object]]:
         path = self.run_dir / target_date.isoformat() / "taxonomy-gap-candidates.json"

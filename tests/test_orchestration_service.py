@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from haotian.collectors.github_trending import TrendingRepo
+from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
 from haotian.services.repository_analysis_service import EvidenceSnippet as AnalysisEvidenceSnippet
 from haotian.services.repository_analysis_service import RepositoryAnalysisResult
 from haotian.services.repository_analysis_service import RepositoryAnalysisService
@@ -20,7 +21,7 @@ from haotian.services.report_service import ReportService
 from haotian.services.skill_sync_service import SkillSyncAction
 from haotian.services.skill_sync_service import SkillSyncCandidate
 from haotian.services.skill_sync_service import SkillSyncResult
-from haotian.db.schema import get_connection
+from haotian.db.schema import get_connection, initialize_schema
 
 
 class StubCollector:
@@ -390,7 +391,11 @@ def test_build_classification_input_writes_skill_candidates_artifact(tmp_path) -
             "acme/extractor": make_layered_result("acme/extractor", repo_url="https://github.com/acme/extractor"),
         }
     )
-    service = build_service(tmp_path, repository_analysis_service=analysis_service)
+    service = build_service(
+        tmp_path,
+        collector=MutableCollector(["acme/browser-bot"]),
+        repository_analysis_service=analysis_service,
+    )
 
     result = service.build_classification_input(date(2026, 3, 20))
 
@@ -400,6 +405,138 @@ def test_build_classification_input_writes_skill_candidates_artifact(tmp_path) -
     assert payload["expected_output_filename"] == "skill-merge-decisions.json"
     assert payload["candidates"][0]["display_name"] == "agent-builder"
     assert payload["candidates"][0]["candidate_id"].startswith("skillcand-")
+
+
+def test_build_classification_input_writes_auto_skill_merge_decisions_for_integrable_packages(tmp_path) -> None:
+    package_root = tmp_path / "source" / "skills" / "agent-builder"
+    package_root.mkdir(parents=True)
+    package_root.joinpath("SKILL.md").write_text("# Agent Builder\n", encoding="utf-8")
+    package_root.joinpath("README.md").write_text("# Readme\n", encoding="utf-8")
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="agent-builder",
+            package_root=package_root,
+            relative_root="skills/agent-builder",
+            files=("SKILL.md", "README.md"),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/codex-skills": make_layered_result(
+                "acme/codex-skills",
+                repo_url="https://github.com/acme/codex-skills",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=MutableCollector(["acme/codex-skills"]),
+        metadata_fetcher=StubMetadataFetcher(
+            {
+                "acme/codex-skills": RepositoryMetadataPayload(
+                    readme="A collection of Codex skills.",
+                    topics=("codex", "skills"),
+                    pushed_at="2026-03-01T00:00:00Z",
+                )
+            }
+        ),
+        repository_analysis_service=analysis_service,
+    )
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    decisions_path = result.skill_candidates_path.with_name("skill-merge-decisions.json")
+    payload = json.loads(decisions_path.read_text(encoding="utf-8"))
+    assert payload["decision_mode"] == "auto"
+    assert payload["decisions"] == [
+        {
+            "candidate_id": json.loads(result.skill_candidates_path.read_text(encoding="utf-8"))["candidates"][0]["candidate_id"],
+            "decision": "install",
+            "canonical_name": "agent-builder",
+            "merge_target": "agent-builder",
+            "accepted": True,
+            "reason": "自动接纳：候选是目录级 Codex skill 包，包含 SKILL.md，且源包目录可用于审计安装。",
+        }
+    ]
+
+
+def test_build_classification_input_skips_auto_skill_decisions_for_generic_repositories(tmp_path) -> None:
+    package_root = tmp_path / "source" / "skills" / "agent-builder"
+    package_root.mkdir(parents=True)
+    package_root.joinpath("SKILL.md").write_text("# Agent Builder\n", encoding="utf-8")
+    discovered_skill_packages = (
+        DiscoveredSkillPackage(
+            skill_name="agent-builder",
+            package_root=package_root,
+            relative_root="skills/agent-builder",
+            files=("SKILL.md",),
+        ),
+    )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/browser-bot": make_layered_result(
+                "acme/browser-bot",
+                repo_url="https://github.com/acme/browser-bot",
+                discovered_skill_packages=discovered_skill_packages,
+            ),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=MutableCollector(["acme/browser-bot"]),
+        repository_analysis_service=analysis_service,
+    )
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    assert result.skill_candidates_path is not None
+    assert not result.skill_candidates_path.with_name("skill-merge-decisions.json").exists()
+
+
+def test_build_classification_input_allows_large_skill_source_repositories(tmp_path) -> None:
+    discovered_skill_packages = []
+    for index in range(65):
+        package_root = tmp_path / "source" / "skills" / f"skill-{index}"
+        package_root.mkdir(parents=True)
+        package_root.joinpath("SKILL.md").write_text(f"# Skill {index}\n", encoding="utf-8")
+        discovered_skill_packages.append(
+            DiscoveredSkillPackage(
+                skill_name=f"skill-{index}",
+                package_root=package_root,
+                relative_root=f"skills/skill-{index}",
+                files=("SKILL.md",),
+            )
+        )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/everything-codex-skills": make_layered_result(
+                "acme/everything-codex-skills",
+                repo_url="https://github.com/acme/everything-codex-skills",
+                discovered_skill_packages=tuple(discovered_skill_packages),
+            ),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=MutableCollector(["acme/everything-codex-skills"]),
+        metadata_fetcher=StubMetadataFetcher(
+            {
+                "acme/everything-codex-skills": RepositoryMetadataPayload(
+                    readme="A very large collection of Codex skills.",
+                    topics=("codex", "skills"),
+                    pushed_at="2026-03-01T00:00:00Z",
+                )
+            }
+        ),
+        repository_analysis_service=analysis_service,
+    )
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    assert result.skill_candidates_path is not None
+    decisions_payload = json.loads(result.skill_candidates_path.with_name("skill-merge-decisions.json").read_text(encoding="utf-8"))
+    assert len(decisions_payload["decisions"]) == 65
 
 
 def test_ingest_skill_merge_decisions_syncs_accepted_candidates(tmp_path) -> None:
@@ -870,6 +1007,42 @@ def test_repository_analysis_service_preserves_config_and_code_signals_under_bud
     assert result.cleanup_completed is True
 
 
+def test_repository_analysis_service_snapshots_discovered_skill_packages_before_cleanup(tmp_path) -> None:
+    source = tmp_path / "source"
+    skill_root = source / "skills" / "agent-builder"
+    skill_root.mkdir(parents=True)
+    subprocess.run(["git", "init", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "Test User"], check=True)
+    for relative_path, content in {
+        "README.md": "# Demo\n",
+        "skills/agent-builder/SKILL.md": "# Agent Builder\n",
+        "skills/agent-builder/README.md": "# Agent Builder Readme\n",
+    }.items():
+        path = source / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "-C", str(source), "add", relative_path], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-m", "initial"], check=True)
+
+    service = RepositoryAnalysisService(
+        run_label="2026-03-20",
+        base_dir=tmp_path / "tmp-repos",
+        skill_package_snapshot_dir=tmp_path / "runs" / "2026-03-20" / "skill-package-sources",
+    )
+
+    result = service.analyze_repository(
+        repo_full_name="acme/demo",
+        repo_url=str(source),
+    )
+
+    package = next(item for item in result.discovered_skill_packages if item.relative_root == "skills/agent-builder")
+    assert package.package_root.exists()
+    assert package.package_root.joinpath("SKILL.md").read_text(encoding="utf-8").startswith("# Agent Builder")
+    assert str(package.package_root).startswith(str(tmp_path / "runs" / "2026-03-20" / "skill-package-sources"))
+    assert result.cleanup_completed is True
+
+
 def test_ingest_classification_output_uses_repo_analysis_snapshots_for_final_counters(tmp_path) -> None:
     analysis_service = StubRepositoryAnalysisService(
         {
@@ -917,6 +1090,10 @@ def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_
     from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
 
     package_root = tmp_path / "source"
+    package_root.joinpath("skills", "browser").mkdir(parents=True)
+    package_root.joinpath("SKILL.md").write_text("# Browser Bot\n", encoding="utf-8")
+    package_root.joinpath("skills", "browser", "SKILL.md").write_text("# Browser\n", encoding="utf-8")
+    package_root.joinpath("skills", "browser", "skill_runner.py").write_text("print('ok')\n", encoding="utf-8")
     discovered_skill_packages = (
         DiscoveredSkillPackage(
             skill_name="browser-bot",
@@ -998,6 +1175,72 @@ def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_
     assert third.cached_reused_repos == 0
     assert analysis_service.calls == [("acme/alpha", True)]
     assert third_payload["items"][0]["analysis_source"] == "fresh"
+
+
+def test_build_classification_input_refreshes_cache_when_skill_package_sources_are_missing(tmp_path) -> None:
+    from haotian.collectors.github_repository_metadata import RepositoryMetadataPayload
+    from haotian.services.repository_skill_package_service import DiscoveredSkillPackage
+
+    missing_package_root = tmp_path / "deleted-source" / "skills" / "browser"
+    refreshed_package_root = tmp_path / "source" / "skills" / "browser"
+    refreshed_package_root.mkdir(parents=True)
+    refreshed_package_root.joinpath("SKILL.md").write_text("# Browser\n", encoding="utf-8")
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/alpha": make_layered_result(
+                "acme/alpha",
+                repo_url="https://github.com/acme/alpha",
+                discovered_skill_packages=(
+                    DiscoveredSkillPackage(
+                        skill_name="browser",
+                        package_root=refreshed_package_root,
+                        relative_root="skills/browser",
+                        files=("SKILL.md",),
+                    ),
+                ),
+            ),
+        }
+    )
+    collector = MutableCollector(["acme/alpha"])
+    metadata_fetcher = StubMetadataFetcher(
+        {
+            "acme/alpha": RepositoryMetadataPayload(
+                readme="Alpha repo.",
+                topics=("alpha",),
+                pushed_at="2025-12-01T00:00:00Z",
+            )
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=collector,
+        metadata_fetcher=metadata_fetcher,
+        repository_analysis_service=analysis_service,
+        max_deep_analysis_repos=1,
+    )
+    initialize_schema(service.database_url)
+    cached_result = make_layered_result(
+        "acme/alpha",
+        repo_url="https://github.com/acme/alpha",
+        discovered_skill_packages=(
+            DiscoveredSkillPackage(
+                skill_name="browser",
+                package_root=missing_package_root,
+                relative_root="skills/browser",
+                files=("SKILL.md",),
+            ),
+        ),
+    )
+    service.analysis_cache_service.upsert(
+        result=cached_result,
+        source_pushed_at="2025-12-01T00:00:00Z",
+        analyzed_at="2026-03-20T00:00:00Z",
+    )
+
+    result = service.build_classification_input(date(2026, 3, 21))
+
+    assert result.cached_reused_repos == 0
+    assert analysis_service.calls == [("acme/alpha", True)]
 
 
 def test_build_classification_input_reconciles_repo_analysis_snapshots_for_same_date_rerun(tmp_path) -> None:

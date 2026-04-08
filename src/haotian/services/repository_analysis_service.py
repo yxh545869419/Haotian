@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import shutil
 
@@ -113,11 +114,13 @@ class RepositoryAnalysisService:
         base_dir: Path | str | None = None,
         workspace_service: RepositoryWorkspaceService | None = None,
         probe_service: RepositoryProbeService | None = None,
+        skill_package_snapshot_dir: Path | str | None = None,
     ) -> None:
         self.run_label = run_label
         self.workspace_service = workspace_service or RepositoryWorkspaceService(run_label=run_label, base_dir=base_dir)
         self.probe_service = probe_service or RepositoryProbeService()
         self.skill_package_service = RepositorySkillPackageService()
+        self.skill_package_snapshot_dir = Path(skill_package_snapshot_dir) if skill_package_snapshot_dir is not None else None
 
     def analyze_repository(
         self,
@@ -148,6 +151,10 @@ class RepositoryAnalysisService:
             cleanup_required = True
             self._remove_git_metadata(workspace.path)
             discovered_skill_packages = self.skill_package_service.discover(workspace.path)
+            discovered_skill_packages = self._snapshot_discovered_skill_packages(
+                repo_full_name=repo_full_name,
+                packages=discovered_skill_packages,
+            )
             probe_result = self.probe_service.probe(workspace.path)
             analysis_completed = True
         except Exception as exc:  # noqa: BLE001
@@ -192,6 +199,52 @@ class RepositoryAnalysisService:
             analysis_limits=analysis_limits,
             discovered_skill_packages=discovered_skill_packages,
         )
+
+    def _snapshot_discovered_skill_packages(
+        self,
+        *,
+        repo_full_name: str,
+        packages: tuple[DiscoveredSkillPackage, ...],
+    ) -> tuple[DiscoveredSkillPackage, ...]:
+        if self.skill_package_snapshot_dir is None:
+            return packages
+
+        snapshotted: list[DiscoveredSkillPackage] = []
+        for package in packages:
+            if package.relative_root.strip() in {"", "."}:
+                snapshotted.append(package)
+                continue
+            if not package.package_root.exists() or not package.package_root.is_dir():
+                snapshotted.append(package)
+                continue
+            target_root = self._skill_package_snapshot_root(repo_full_name=repo_full_name, package=package)
+            if target_root.exists():
+                shutil.rmtree(target_root, ignore_errors=False)
+            target_root.mkdir(parents=True, exist_ok=True)
+            for relative_file in package.files:
+                source_path = package.package_root / relative_file
+                if not source_path.exists() or not source_path.is_file():
+                    continue
+                target_path = target_root / relative_file
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+            snapshotted.append(
+                DiscoveredSkillPackage(
+                    skill_name=package.skill_name,
+                    package_root=target_root,
+                    relative_root=package.relative_root,
+                    files=package.files,
+                )
+            )
+        return tuple(snapshotted)
+
+    def _skill_package_snapshot_root(self, *, repo_full_name: str, package: DiscoveredSkillPackage) -> Path:
+        assert self.skill_package_snapshot_dir is not None
+        repo_token = repo_full_name.strip().replace("\\", "/").replace("/", "__")
+        digest = hashlib.sha1(
+            f"{repo_full_name.strip().lower()}|{package.relative_root.strip().lower()}".encode("utf-8")
+        ).hexdigest()[:12]
+        return self.skill_package_snapshot_dir / repo_token / f"{package.skill_name}-{digest}"
 
     def _build_success_result(
         self,
