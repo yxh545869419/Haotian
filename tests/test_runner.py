@@ -422,7 +422,7 @@ def test_runner_rebuilds_stale_auto_skill_decisions(tmp_path) -> None:
 
     assert first["status"] == "awaiting_skill_decision"
     assert second["status"] == "awaiting_skill_decision"
-    assert rebuilt_payload["auto_policy_version"] == 3
+    assert rebuilt_payload["auto_policy_version"] == 4
     assert rebuilt_payload["decisions"][0]["candidate_id"] != "stale"
 
 

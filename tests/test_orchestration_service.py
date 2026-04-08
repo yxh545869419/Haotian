@@ -539,6 +539,57 @@ def test_build_classification_input_allows_large_skill_source_repositories(tmp_p
     assert len(decisions_payload["decisions"]) == 65
 
 
+def test_build_classification_input_deduplicates_mirrored_skill_source_paths(tmp_path) -> None:
+    discovered_skill_packages = []
+    for relative_root in (
+        "docs/zh-CN/skills/coding-standards",
+        ".agents/skills/coding-standards",
+        "skills/coding-standards",
+    ):
+        package_root = tmp_path / "source" / relative_root
+        package_root.mkdir(parents=True)
+        package_root.joinpath("SKILL.md").write_text("# Coding Standards\n", encoding="utf-8")
+        discovered_skill_packages.append(
+            DiscoveredSkillPackage(
+                skill_name="coding-standards",
+                package_root=package_root,
+                relative_root=relative_root,
+                files=("SKILL.md",),
+            )
+        )
+    analysis_service = StubRepositoryAnalysisService(
+        {
+            "acme/everything-codex-skills": make_layered_result(
+                "acme/everything-codex-skills",
+                repo_url="https://github.com/acme/everything-codex-skills",
+                discovered_skill_packages=tuple(discovered_skill_packages),
+            ),
+        }
+    )
+    service = build_service(
+        tmp_path,
+        collector=MutableCollector(["acme/everything-codex-skills"]),
+        metadata_fetcher=StubMetadataFetcher(
+            {
+                "acme/everything-codex-skills": RepositoryMetadataPayload(
+                    readme="A very large collection of Codex skills.",
+                    topics=("codex", "skills"),
+                    pushed_at="2026-03-01T00:00:00Z",
+                )
+            }
+        ),
+        repository_analysis_service=analysis_service,
+    )
+
+    result = service.build_classification_input(date(2026, 3, 20))
+
+    candidates = json.loads(result.skill_candidates_path.read_text(encoding="utf-8"))["candidates"]
+    decisions = json.loads(result.skill_candidates_path.with_name("skill-merge-decisions.json").read_text(encoding="utf-8"))["decisions"]
+    chosen_candidate = next(item for item in candidates if item["candidate_id"] == decisions[0]["candidate_id"])
+    assert len(decisions) == 1
+    assert chosen_candidate["relative_root"] == "skills/coding-standards"
+
+
 def test_ingest_skill_merge_decisions_syncs_accepted_candidates(tmp_path) -> None:
     class SingleRepoCollector:
         def fetch_trending(self, period: str) -> list[TrendingRepo]:

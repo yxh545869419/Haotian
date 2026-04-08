@@ -809,6 +809,7 @@ class ReportService:
                 skill_id=skill_id,
                 candidate_id=str(candidate.get("candidate_id", "")).strip(),
                 candidate_repo=str(candidate.get("repo_full_name", "")).strip(),
+                candidate_relative_root=str(candidate.get("relative_root", "")).strip(),
                 sync_actions=normalized_actions,
             )
             action_installed_path = self._valid_action_installed_path(
@@ -865,6 +866,7 @@ class ReportService:
         skill_id: str,
         candidate_id: str,
         candidate_repo: str,
+        candidate_relative_root: str,
         sync_actions: list[dict[str, object]],
     ) -> dict[str, object] | None:
         del candidate_id
@@ -875,6 +877,8 @@ class ReportService:
             if action_repo != candidate_repo:
                 continue
             if action_slug == skill_id or matched_slug == skill_id:
+                return action
+            if str(action.get("relative_root", "")).strip() == candidate_relative_root:
                 return action
         return None
 

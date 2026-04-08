@@ -18,7 +18,7 @@ SKILL_SYNC_ACTIONS = (
     "rolled_back_install_failure",
 )
 
-AUTO_SKILL_DECISION_POLICY_VERSION = 3
+AUTO_SKILL_DECISION_POLICY_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)

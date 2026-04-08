@@ -371,9 +371,9 @@ def test_report_service_switches_to_skill_summary_when_skill_artifacts_exist(tmp
     skills_root = tmp_path / "skills"
     inventory_service = FakeInventoryService(
         {
-            "browser-bot": _installed_skill_record(
+            "acme-browser-bot-browser-bot-1234567890": _installed_skill_record(
                 skills_root,
-                "browser-bot",
+                "acme-browser-bot-browser-bot-1234567890",
                 display_name="Browser Bot",
                 description="用于执行浏览器自动化流程。",
             ),
@@ -510,14 +510,14 @@ def test_report_service_switches_to_skill_summary_when_skill_artifacts_exist(tmp
                 "actions": [
                     {
                         "action": "aligned_existing",
-                        "slug": "browser-bot",
+                        "slug": "acme-browser-bot-browser-bot-1234567890",
                         "display_name": "Browser Bot",
                         "source_repo_full_name": "acme/browser-bot",
                         "repo_url": "https://github.com/acme/browser-bot",
                         "relative_root": "skills/browser-bot",
                         "files": ["SKILL.md", "README.md"],
-                        "matched_installed_slug": "browser-bot",
-                        "matched_installed_path": str((skills_root / "browser-bot").resolve()),
+                        "matched_installed_slug": "acme-browser-bot-browser-bot-1234567890",
+                        "matched_installed_path": str((skills_root / "acme-browser-bot-browser-bot-1234567890").resolve()),
                         "reason": "已对齐现有 skill。",
                     }
                 ],

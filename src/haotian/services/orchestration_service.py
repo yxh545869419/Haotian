@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -495,14 +495,14 @@ class OrchestrationService:
 
     def _build_auto_skill_merge_decisions(self, *, candidates: list[dict[str, object]]) -> list[dict[str, object]]:
         decisions: list[dict[str, object]] = []
-        candidate_counts_by_repo = Counter(str(candidate.get("repo_full_name", "")).strip() for candidate in candidates)
-        for candidate in candidates:
+        installable_candidates = [
+            candidate
+            for candidate in candidates
+            if self._is_auto_installable_skill_candidate(candidate)
+        ]
+        for candidate in self._deduplicate_auto_skill_candidates(installable_candidates):
             repo_full_name = str(candidate.get("repo_full_name", "")).strip()
-            if not self._is_auto_installable_skill_candidate(
-                candidate,
-                repo_candidate_count=candidate_counts_by_repo[repo_full_name],
-            ):
-                continue
+            del repo_full_name
             slug = self._slug_from_name(str(candidate.get("slug", "")))
             display_name = str(candidate.get("display_name") or slug).strip() or slug
             decisions.append(
@@ -519,11 +519,7 @@ class OrchestrationService:
         return decisions
 
     @staticmethod
-    def _is_auto_installable_skill_candidate(
-        candidate: dict[str, object],
-        *,
-        repo_candidate_count: int,
-    ) -> bool:
+    def _is_auto_installable_skill_candidate(candidate: dict[str, object]) -> bool:
         candidate_id = str(candidate.get("candidate_id", "")).strip()
         slug = OrchestrationService._slug_from_name(str(candidate.get("slug", "")))
         repo_full_name = str(candidate.get("repo_full_name", "")).strip()
@@ -542,11 +538,49 @@ class OrchestrationService:
             return False
         if not OrchestrationService._repo_name_looks_like_skill_source(repo_full_name):
             return False
-        del repo_candidate_count
         try:
             return Path(source_package_root).resolve(strict=True).is_dir()
         except OSError:
             return False
+
+    @staticmethod
+    def _deduplicate_auto_skill_candidates(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+        best_by_repo_and_slug: dict[tuple[str, str], dict[str, object]] = {}
+        for candidate in candidates:
+            key = (
+                str(candidate.get("repo_full_name", "")).strip().casefold(),
+                OrchestrationService._slug_from_name(str(candidate.get("slug", ""))),
+            )
+            current = best_by_repo_and_slug.get(key)
+            if current is None or OrchestrationService._skill_candidate_path_rank(candidate) < OrchestrationService._skill_candidate_path_rank(current):
+                best_by_repo_and_slug[key] = candidate
+        return sorted(
+            best_by_repo_and_slug.values(),
+            key=lambda item: (
+                OrchestrationService._slug_from_name(str(item.get("slug", ""))),
+                str(item.get("repo_full_name", "")).casefold(),
+                str(item.get("candidate_id", "")).casefold(),
+            ),
+        )
+
+    @staticmethod
+    def _skill_candidate_path_rank(candidate: dict[str, object]) -> tuple[int, int, str]:
+        slug = OrchestrationService._slug_from_name(str(candidate.get("slug", "")))
+        relative_root = str(candidate.get("relative_root", "")).strip().replace("\\", "/").casefold()
+        files = tuple(str(item).strip() for item in candidate.get("files", []) if str(item).strip())
+        canonical_paths = {
+            f"skills/{slug}": 0,
+            f".agents/skills/{slug}": 1,
+            f".kiro/skills/{slug}": 2,
+            f".cursor/skills/{slug}": 3,
+        }
+        if relative_root in canonical_paths:
+            priority = canonical_paths[relative_root]
+        elif re.fullmatch(r"docs/[^/]+/skills/" + re.escape(slug), relative_root):
+            priority = 4
+        else:
+            priority = 5
+        return (priority, -len(files), relative_root)
 
     @staticmethod
     def _repo_name_looks_like_skill_source(repo_full_name: str) -> bool:
