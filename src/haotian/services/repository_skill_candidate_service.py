@@ -50,7 +50,7 @@ class RepositorySkillCandidateService:
                 continue
             repo_full_name = str(item.get("repo_full_name", "")).strip()
             repo_url = str(item.get("repo_url", "")).strip()
-            description = str(item.get("description", "")).strip()
+            repo_description = str(item.get("description", "")).strip()
             matched_keywords = tuple(
                 str(keyword).strip()
                 for keyword in item.get("matched_keywords", ())
@@ -85,7 +85,7 @@ class RepositorySkillCandidateService:
                         relative_root=package.relative_root or ".",
                         files=package.files,
                         source_package_root=str(package.package_root),
-                        description=description,
+                        description=package.description or repo_description,
                         matched_keywords=matched_keywords,
                         architecture_signals=architecture_signals,
                     )

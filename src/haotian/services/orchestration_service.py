@@ -429,7 +429,7 @@ class OrchestrationService:
                         relative_root=package.relative_root or ".",
                         files=package.files,
                         source_package_root=package.package_root,
-                        description=str(item.get("description", "")).strip(),
+                        description=package.description or str(item.get("description", "")).strip(),
                         matched_keywords=tuple(
                             str(keyword).strip()
                             for keyword in item.get("matched_keywords", ())

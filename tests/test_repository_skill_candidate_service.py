@@ -32,6 +32,30 @@ def test_extract_candidates_builds_stable_candidate_ids() -> None:
     assert first[0].relative_root == "skills/agent-builder"
 
 
+def test_extract_candidates_prefers_skill_description_over_repo_description() -> None:
+    service = RepositorySkillCandidateService()
+
+    items = [
+        {
+            "repo_full_name": "Yeachan-Heo/oh-my-codex",
+            "repo_url": "https://github.com/Yeachan-Heo/oh-my-codex",
+            "description": "OmX - Oh My codeX: Your codex is not alone.",
+            "discovered_skill_packages": [
+                {
+                    "skill_name": "ask-claude",
+                    "relative_root": "skills/ask-claude",
+                    "files": ["SKILL.md"],
+                    "description": "Ask Claude via local CLI and capture a reusable artifact.",
+                }
+            ],
+        }
+    ]
+
+    candidates = service.extract(items)
+
+    assert candidates[0].description == "Ask Claude via local CLI and capture a reusable artifact."
+
+
 def test_extract_candidates_skips_items_without_discovered_skill_packages() -> None:
     service = RepositorySkillCandidateService()
 

@@ -120,7 +120,11 @@ class CodexSkillInventoryService:
         except OSError:
             return fallback_slug
 
-        for line in content.splitlines():
+        metadata = CodexSkillInventoryService._frontmatter(content)
+        if metadata.get("name"):
+            return metadata["name"]
+
+        for line in CodexSkillInventoryService._body_lines(content):
             stripped = line.strip()
             if stripped.startswith("#"):
                 candidate = stripped.lstrip("#").strip()
@@ -138,8 +142,12 @@ class CodexSkillInventoryService:
         except OSError:
             return ""
 
+        metadata = CodexSkillInventoryService._frontmatter(content)
+        if metadata.get("description"):
+            return metadata["description"]
+
         saw_heading = False
-        for line in content.splitlines():
+        for line in CodexSkillInventoryService._body_lines(content):
             stripped = line.strip()
             if not stripped:
                 continue
@@ -148,6 +156,35 @@ class CodexSkillInventoryService:
                 continue
             return stripped
         return ""
+
+    @staticmethod
+    def _frontmatter(content: str) -> dict[str, str]:
+        lines = content.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}
+        metadata: dict[str, str] = {}
+        for line in lines[1:]:
+            stripped = line.strip()
+            if stripped == "---":
+                break
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            normalized_key = key.strip().casefold()
+            normalized_value = value.strip().strip("\"'")
+            if normalized_key and normalized_value:
+                metadata[normalized_key] = normalized_value
+        return metadata
+
+    @staticmethod
+    def _body_lines(content: str) -> tuple[str, ...]:
+        lines = content.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return tuple(lines)
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                return tuple(lines[index + 1 :])
+        return tuple(lines)
 
     @staticmethod
     def _managed_wrapper_metadata(skill_dir: Path) -> dict[str, object]:

@@ -88,6 +88,40 @@ def test_discover_returns_root_and_nested_skill_packages_in_sorted_order(tmp_pat
     )
 
 
+def test_discover_reads_skill_frontmatter_description(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    write_repo_file(
+        repo,
+        "skills/verify/SKILL.md",
+        "---\nname: verification-before-completion\ndescription: Verify before claiming completion.\n---\n\n# Verification\n",
+    )
+
+    result = RepositorySkillPackageService().discover(repo)
+
+    assert result[0].skill_name == "verify"
+    assert result[0].description == "Verify before claiming completion."
+
+
+def test_deserialized_package_reads_description_from_source_package_root(tmp_path) -> None:
+    package_root = tmp_path / "repo" / "skills" / "ask-claude"
+    write_repo_file(
+        package_root,
+        "SKILL.md",
+        "---\nname: ask-claude\ndescription: Ask Claude via local CLI.\n---\n\n# Ask Claude\n",
+    )
+
+    package = DiscoveredSkillPackage.from_serialized_payload(
+        {
+            "skill_name": "ask-claude",
+            "relative_root": "skills/ask-claude",
+            "files": ["SKILL.md"],
+            "source_package_root": str(package_root),
+        }
+    )
+
+    assert package.description == "Ask Claude via local CLI."
+
+
 def test_discover_ignores_supporting_docs_without_skill_manifest(tmp_path) -> None:
     repo = tmp_path / "repo"
     write_repo_file(repo, "AGENTS.md", "# Root agents")
@@ -173,11 +207,13 @@ def test_analysis_result_exposes_discovered_skill_packages_in_classification_fie
             "relative_root": ".",
             "files": ["SKILL.md"],
             "source_package_root": str(repo),
+            "description": "",
         },
         {
             "skill_name": "browser",
             "relative_root": "skills/browser",
             "files": ["SKILL.md", "skill_runner.py"],
             "source_package_root": str(repo / "skills" / "browser"),
+            "description": "",
         },
     ]

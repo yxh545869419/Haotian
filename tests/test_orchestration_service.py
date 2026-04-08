@@ -1199,19 +1199,21 @@ def test_build_classification_input_reuses_cached_analysis_until_repo_pushed_at_
     assert second.cached_reused_repos == 1
     assert analysis_service.calls == []
     assert first_payload["items"][0]["discovered_skill_packages"] == [
-        {
-            "skill_name": "browser-bot",
-            "relative_root": ".",
-            "files": ["SKILL.md"],
-            "source_package_root": str(package_root),
-        },
-        {
-            "skill_name": "browser",
-            "relative_root": "skills/browser",
-            "files": ["SKILL.md", "skill_runner.py"],
-            "source_package_root": str(package_root / "skills" / "browser"),
-        },
-    ]
+            {
+                "skill_name": "browser-bot",
+                "relative_root": ".",
+                "files": ["SKILL.md"],
+                "source_package_root": str(package_root),
+                "description": "",
+            },
+            {
+                "skill_name": "browser",
+                "relative_root": "skills/browser",
+                "files": ["SKILL.md", "skill_runner.py"],
+                "source_package_root": str(package_root / "skills" / "browser"),
+                "description": "",
+            },
+        ]
     assert second_payload["items"][0]["discovered_skill_packages"] == first_payload["items"][0]["discovered_skill_packages"]
     assert second_payload["items"][0]["analysis_source"] == "cache"
 

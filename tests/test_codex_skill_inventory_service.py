@@ -77,6 +77,25 @@ def test_codex_skill_inventory_uses_canonical_paths_and_skips_missing_roots(tmp_
     assert inventory["agent-designer"].canonical_path == skill_dir.resolve()
 
 
+def test_codex_skill_inventory_reads_frontmatter_name_and_description(tmp_path) -> None:
+    root = tmp_path / "skills"
+    skill_dir = root / "verification-before-completion"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: verification-before-completion\n"
+        "description: Verify before claiming completion.\n"
+        "---\n\n"
+        "# Verification Before Completion\n",
+        encoding="utf-8",
+    )
+
+    inventory = CodexSkillInventoryService((root,)).scan()
+
+    assert inventory["verification-before-completion"].display_name == "verification-before-completion"
+    assert inventory["verification-before-completion"].description == "Verify before claiming completion."
+
+
 def test_codex_skill_inventory_uses_configured_managed_root_when_roots_omitted(
     monkeypatch, tmp_path
 ) -> None:
