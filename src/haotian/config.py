@@ -67,6 +67,7 @@ class Settings(BaseModel):
     )
     codex_skill_roots: tuple[Path, ...] = Field(default_factory=tuple, alias="CODEX_SKILL_ROOTS")
     codex_managed_skill_root: Path | None = Field(default=None, alias="CODEX_MANAGED_SKILL_ROOT")
+    codex_collection_skill_root: Path | None = Field(default=None, alias="CODEX_COLLECTION_SKILL_ROOT")
     skill_audit_script: Path | None = Field(default=None, alias="SKILL_AUDIT_SCRIPT")
 
     @classmethod
@@ -107,6 +108,8 @@ def get_settings() -> Settings:
         settings.codex_skill_roots = _default_codex_skill_roots()
     if settings.codex_managed_skill_root is None:
         settings.codex_managed_skill_root = _default_codex_managed_skill_root()
+    if settings.codex_collection_skill_root is None:
+        settings.codex_collection_skill_root = _default_codex_collection_skill_root()
     if settings.skill_audit_script is None:
         settings.skill_audit_script = _default_skill_audit_script()
     settings.database_url = _resolve_database_url(settings.database_url)
@@ -116,6 +119,8 @@ def get_settings() -> Settings:
     settings.codex_skill_roots = tuple(_resolve_runtime_path(path) for path in settings.codex_skill_roots)
     if settings.codex_managed_skill_root is not None:
         settings.codex_managed_skill_root = _resolve_runtime_path(settings.codex_managed_skill_root)
+    if settings.codex_collection_skill_root is not None:
+        settings.codex_collection_skill_root = _resolve_runtime_path(settings.codex_collection_skill_root)
     if settings.skill_audit_script is not None:
         settings.skill_audit_script = _resolve_runtime_path(settings.skill_audit_script)
     settings.tmp_repo_dir.mkdir(parents=True, exist_ok=True)
@@ -163,6 +168,10 @@ def _default_codex_skill_roots() -> tuple[Path, ...]:
 
 def _default_codex_managed_skill_root() -> Path:
     return Path("E:/CodexHome/skills/haotian-managed")
+
+
+def _default_codex_collection_skill_root() -> Path:
+    return Path("E:/CodexHome/skill-sources/haotian-collections")
 
 
 def _default_skill_audit_script() -> Path | None:

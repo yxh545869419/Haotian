@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import hashlib
 import json
@@ -52,6 +52,7 @@ class SkillSyncCandidate:
     matched_keywords: tuple[str, ...] = ()
     architecture_signals: tuple[str, ...] = ()
     capability_ids: tuple[str, ...] = ()
+    install_scope: Literal["skill", "collection"] = "skill"
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,16 +113,21 @@ class SkillSyncResult:
 class SkillSyncService:
     """Align existing skills or install audited full skill packages for new ones."""
 
+    COLLECTION_THRESHOLD = 8
+
     def __init__(
         self,
         *,
         managed_root: Path | str | None = None,
+        collection_root: Path | str | None = None,
         inventory_service: CodexSkillInventoryService | None = None,
         audit_service: SkillAuditService | object | None = None,
     ) -> None:
         settings = get_settings()
         resolved_managed_root = managed_root if managed_root is not None else settings.codex_managed_skill_root
+        resolved_collection_root = collection_root if collection_root is not None else settings.codex_collection_skill_root
         self.managed_root = Path(resolved_managed_root) if resolved_managed_root is not None else None
+        self.collection_root = Path(resolved_collection_root) if resolved_collection_root is not None else None
         self.inventory_service = inventory_service or CodexSkillInventoryService(managed_root=self.managed_root)
         if audit_service is None and settings.skill_audit_script is not None:
             audit_service = SkillAuditService(script_path=settings.skill_audit_script)
@@ -134,9 +140,10 @@ class SkillSyncService:
         candidates: list[SkillSyncCandidate] | tuple[SkillSyncCandidate, ...],
         inventory: dict[str, InstalledSkillRecord] | None = None,
     ) -> SkillSyncResult:
+        prepared_candidates = self._prepare_collection_candidates(tuple(candidates))
         ordered_candidates = tuple(
             sorted(
-                candidates,
+                prepared_candidates,
                 key=lambda item: (
                     self._normalized_token(item.slug),
                     self._normalized_token(item.source_repo_full_name),
@@ -154,6 +161,17 @@ class SkillSyncService:
                 inventory_records=inventory_records,
                 duplicate_slug_groups=duplicate_slug_groups,
             )
+            if action.action == "installed_new" and candidate.install_scope == "collection":
+                removed = self._remove_legacy_collection_managed_matches(
+                    candidate=candidate,
+                    installed_path=Path(action.installed_path or ""),
+                    inventory_records=tuple(inventory_records.values()),
+                )
+                if removed:
+                    action = replace(
+                        action,
+                        reason=f"{action.reason} Removed {removed} legacy split managed duplicate(s).",
+                    )
             actions.append(action)
             if action.action == "installed_new" and action.installed_path is not None and self.managed_root is not None:
                 installed_path = Path(action.installed_path).resolve(strict=False)
@@ -171,6 +189,7 @@ class SkillSyncService:
                     managed_source_repo_full_name=action.source_repo_full_name,
                     managed_wrapper_slug=candidate.slug,
                     managed_relative_root=candidate.relative_root,
+                    managed_install_scope=candidate.install_scope,
                 )
 
         return SkillSyncResult(
@@ -178,6 +197,72 @@ class SkillSyncService:
             summary=self._build_summary(ordered_candidates, actions),
             actions=tuple(actions),
         )
+
+    def _prepare_collection_candidates(
+        self,
+        candidates: tuple[SkillSyncCandidate, ...],
+    ) -> tuple[SkillSyncCandidate, ...]:
+        grouped: dict[tuple[str, str], list[SkillSyncCandidate]] = defaultdict(list)
+        for candidate in candidates:
+            grouped[self._canonical_repo_identity(candidate.source_repo_full_name) or ("", "")].append(candidate)
+
+        prepared: list[SkillSyncCandidate] = []
+        for repo_identity, repo_candidates in grouped.items():
+            if self._repo_is_collection(repo_identity=repo_identity, candidates=repo_candidates):
+                prepared.extend(self._prepare_one_collection(repo_identity=repo_identity, candidates=repo_candidates))
+            else:
+                prepared.extend(repo_candidates)
+        return tuple(prepared)
+
+    def _repo_is_collection(
+        self,
+        *,
+        repo_identity: tuple[str, str],
+        candidates: list[SkillSyncCandidate],
+    ) -> bool:
+        if repo_identity == ("", ""):
+            return False
+        safe_roots = [candidate for candidate in candidates if self._is_safe_relative_root(candidate.relative_root)]
+        return len(safe_roots) >= self.COLLECTION_THRESHOLD
+
+    @classmethod
+    def _collection_repo_token(cls, repo_identity: tuple[str, str]) -> str:
+        return cls._normalized_token(f"{repo_identity[0]}-{repo_identity[1]}")
+
+    def _prepare_one_collection(
+        self,
+        *,
+        repo_identity: tuple[str, str],
+        candidates: list[SkillSyncCandidate],
+    ) -> tuple[SkillSyncCandidate, ...]:
+        if self.collection_root is None:
+            return tuple(replace(candidate, install_scope="collection") for candidate in candidates)
+        collection_base = self.collection_root / self._collection_repo_token(repo_identity)
+        prepared: list[SkillSyncCandidate] = []
+        for candidate in candidates:
+            source_root = candidate.source_package_root
+            collection_package_root = collection_base / self._canonical_relative_root(candidate.relative_root or ".")
+            if source_root is not None and self._is_safe_relative_root(candidate.relative_root):
+                try:
+                    resolved_source = Path(source_root).resolve(strict=True)
+                    if resolved_source.is_dir():
+                        if collection_package_root.exists():
+                            shutil.rmtree(collection_package_root, ignore_errors=False)
+                        collection_package_root.mkdir(parents=True, exist_ok=True)
+                        self._copy_package_contents(resolved_source, collection_package_root)
+                        self._write_collection_metadata(collection_package_root, candidate)
+                        prepared.append(
+                            replace(
+                                candidate,
+                                source_package_root=collection_package_root,
+                                install_scope="collection",
+                            )
+                        )
+                        continue
+                except OSError:
+                    pass
+            prepared.append(replace(candidate, install_scope="collection"))
+        return tuple(prepared)
 
     def _sync_candidate(
         self,
@@ -191,7 +276,7 @@ class SkillSyncService:
         except ValueError as exc:
             return self._action(candidate, "blocked_audit_failure", reason=str(exc))
 
-        if len(duplicate_slug_groups.get(install_slug, ())) > 1:
+        if len(duplicate_slug_groups.get(install_slug, ())) > 1 and candidate.install_scope != "collection":
             return self._action(
                 candidate,
                 "blocked_ambiguous_match",
@@ -478,6 +563,36 @@ class SkillSyncService:
                 continue
         return removed
 
+    def _remove_legacy_collection_managed_matches(
+        self,
+        *,
+        candidate: SkillSyncCandidate,
+        installed_path: Path,
+        inventory_records: tuple[InstalledSkillRecord, ...],
+    ) -> int:
+        if self.managed_root is None:
+            return 0
+        candidate_repo = self._canonical_repo_identity(candidate.source_repo_full_name)
+        candidate_root = self._canonical_relative_root(candidate.relative_root)
+        removed = 0
+        for record in inventory_records:
+            if not record.managed or record.skill_dir == installed_path:
+                continue
+            if record.managed_install_scope == "collection":
+                continue
+            if self._canonical_repo_identity(record.managed_source_repo_full_name) != candidate_repo:
+                continue
+            if self._canonical_relative_root(record.managed_relative_root) != candidate_root:
+                continue
+            if not self._managed_record_is_removable(record):
+                continue
+            try:
+                shutil.rmtree(record.skill_dir, ignore_errors=False)
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
     def _managed_record_is_removable(self, record: InstalledSkillRecord) -> bool:
         if self.managed_root is None:
             return False
@@ -530,6 +645,12 @@ class SkillSyncService:
     ) -> bool:
         if not record.managed:
             return True
+        if candidate.install_scope == "collection":
+            return (
+                record.managed_install_scope == "collection"
+                and SkillSyncService._normalized_token(record.managed_wrapper_slug or record.slug)
+                == SkillSyncService._normalized_token(candidate.slug)
+            )
         if record.managed_wrapper_slug is not None and not SkillSyncService._is_valid_metadata_slug(record.managed_wrapper_slug):
             return False
         if any(not SkillSyncService._is_valid_metadata_slug(alias) for alias in record.aliases):
@@ -716,6 +837,11 @@ class SkillSyncService:
         pure = PurePosixPath(normalized.replace("\\", "/"))
         if pure.is_absolute() or len(pure.parts) != 1 or any(part in {"", ".", ".."} for part in pure.parts):
             raise ValueError(f"Candidate slug '{candidate.slug}' escapes the managed root.")
+        if candidate.install_scope == "collection":
+            candidate_token = SkillSyncService._normalized_token(normalized)
+            if not candidate_token:
+                raise ValueError(f"Candidate slug '{candidate.slug}' does not normalize to a usable directory name.")
+            return candidate_token
         repo_token = SkillSyncService._normalized_token(candidate.source_repo_full_name.replace("/", "-"))
         if not repo_token:
             raise ValueError(f"Candidate repo '{candidate.source_repo_full_name}' does not normalize to a usable directory name.")
@@ -832,10 +958,28 @@ class SkillSyncService:
             "display_name": candidate.display_name.strip() or candidate.slug,
             "source_repo_full_name": candidate.source_repo_full_name,
             "relative_root": candidate.relative_root,
+            "install_scope": candidate.install_scope,
             "files": list(candidate.files),
             "capability_ids": list(candidate.capability_ids),
         }
         (staging_dir / "haotian-wrapper.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_collection_metadata(collection_package_root: Path, candidate: SkillSyncCandidate) -> None:
+        metadata = {
+            "schema_version": 1,
+            "managed_by": "haotian",
+            "install_type": "collection-source",
+            "slug": candidate.slug,
+            "display_name": candidate.display_name.strip() or candidate.slug,
+            "source_repo_full_name": candidate.source_repo_full_name,
+            "relative_root": candidate.relative_root,
+            "files": list(candidate.files),
+        }
+        (collection_package_root / "haotian-collection-source.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

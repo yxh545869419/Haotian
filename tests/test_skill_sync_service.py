@@ -45,6 +45,7 @@ def _candidate(
     description: str = "Codex skill package for browser automation workflows.",
     matched_keywords: tuple[str, ...] = ("SKILL.md", "AGENTS.md"),
     architecture_signals: tuple[str, ...] = ("codex-skill-package",),
+    install_scope: str = "skill",
 ) -> SkillSyncCandidate:
     return SkillSyncCandidate(
         slug=slug,
@@ -58,6 +59,7 @@ def _candidate(
         matched_keywords=matched_keywords,
         architecture_signals=architecture_signals,
         capability_ids=("browser_automation",),
+        install_scope=install_scope,
     )
 
 
@@ -97,6 +99,7 @@ def _installed(
     wrapper_slug: str | None = None,
     root_index: int = 0,
     full_package: bool = False,
+    install_scope: str = "skill",
 ) -> InstalledSkillRecord:
     skill_dir = root / slug
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +119,7 @@ def _installed(
                     "display_name": display_name or slug,
                     "source_repo_full_name": source_repo_full_name,
                     "relative_root": relative_root,
+                    "install_scope": install_scope,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -137,6 +141,7 @@ def _installed(
         managed_source_repo_full_name=source_repo_full_name if managed else None,
         managed_wrapper_slug=(wrapper_slug or slug) if managed else None,
         managed_relative_root=relative_root if managed else None,
+        managed_install_scope=install_scope if managed else None,
     )
 
 
@@ -199,6 +204,75 @@ def test_skill_sync_installs_new_audit_safe_skill_atomically(tmp_path) -> None:
     assert audit_service.calls[0].name.startswith(f".haotian-stage-{result.actions[0].slug}")
     assert list(managed_root.parent.glob(".haotian-stage-*")) == []
     assert result.summary["installed_new"] == 1
+
+
+def test_skill_sync_installs_collection_repo_with_canonical_slug_and_prunes_split_duplicate(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    collection_root = tmp_path / "collections"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, collection_root=collection_root, audit_service=audit_service)
+    old_split = _installed(
+        managed_root,
+        "affaan-m-everything-claude-code-agent-eval-8cc1f6560e",
+        display_name="agent-eval",
+        managed=True,
+        source_repo_full_name="affaan-m/everything-claude-code",
+        relative_root="skills/agent-eval",
+        wrapper_slug="agent-eval",
+        full_package=True,
+    )
+    candidates = []
+    for index in range(8):
+        slug = "agent-eval" if index == 0 else f"skill-{index}"
+        candidates.append(
+            _candidate(
+                slug,
+                display_name=slug,
+                source_repo_full_name="affaan-m/everything-claude-code",
+                relative_root=f"skills/{slug}",
+                source_package_root=_source_package_root(tmp_path, slug),
+            )
+        )
+
+    result = service.sync(report_date=date(2026, 4, 8), candidates=candidates, inventory={old_split.slug: old_split})
+    actions = {action.display_name: action for action in result.actions}
+    agent_eval = actions["agent-eval"]
+
+    assert agent_eval.action == "installed_new"
+    assert agent_eval.slug == "agent-eval"
+    assert "legacy split managed duplicate" in agent_eval.reason
+    assert not old_split.skill_dir.exists()
+    assert Path(agent_eval.installed_path or "").name == "agent-eval"
+    assert (collection_root / "affaan-m-everything-claude-code" / "skills" / "agent-eval" / "SKILL.md").exists()
+    metadata = json.loads(Path(agent_eval.installed_path or "", "haotian-wrapper.json").read_text(encoding="utf-8"))
+    assert metadata["install_scope"] == "collection"
+
+
+def test_skill_sync_allows_cross_collection_slug_dedupe(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    collection_root = tmp_path / "collections"
+    audit_service = FakeAuditService(FakeAuditResult(status="clean", overall_verdict="CLEAN", installable=True))
+    service = SkillSyncService(managed_root=managed_root, collection_root=collection_root, audit_service=audit_service)
+    candidates = []
+    for repo in ("alpha/skills", "bravo/skills"):
+        for index in range(8):
+            slug = "tdd" if index == 0 else f"{repo.split('/')[0]}-{index}"
+            candidates.append(
+                _candidate(
+                    slug,
+                    display_name=slug,
+                    source_repo_full_name=repo,
+                    relative_root=f"skills/{slug}",
+                    source_package_root=_source_package_root(tmp_path, f"{repo.replace('/', '-')}-{slug}"),
+                )
+            )
+
+    result = service.sync(report_date=date(2026, 4, 8), candidates=candidates, inventory={})
+    tdd_actions = [action for action in result.actions if action.display_name == "tdd"]
+
+    assert [action.action for action in tdd_actions] == ["installed_new", "aligned_existing"]
+    assert tdd_actions[0].slug == "tdd"
+    assert tdd_actions[1].matched_installed_slug == "tdd"
 
 
 def test_skill_sync_refuses_wrapper_only_candidate_without_source_package_root(tmp_path) -> None:

@@ -97,9 +97,10 @@ finalize 之后会额外输出：
 如果要真正安装新的 Haotian-managed skill，至少需要：
 
 - `CODEX_MANAGED_SKILL_ROOT`
+- `CODEX_COLLECTION_SKILL_ROOT`
 - `SKILL_AUDIT_SCRIPT`
 
-其中 `CODEX_SKILL_ROOTS` 可选；它主要用于扫描和对齐当前机器上已经安装的 skill，不配置时仍然可以把新的审计通过 skill 安装到 `CODEX_MANAGED_SKILL_ROOT`。
+其中 `CODEX_SKILL_ROOTS` 可选；它主要用于扫描和对齐当前机器上已经安装的 skill，不配置时仍然可以把新的审计通过 skill 安装到 `CODEX_MANAGED_SKILL_ROOT`。`CODEX_COLLECTION_SKILL_ROOT` 用于归档整体 skill collection 源包，不应配置成 Codex 扫描根。
 
 ## 常用检查
 

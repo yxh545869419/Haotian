@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from haotian.config import PROJECT_ROOT
 from haotian.config import Settings
+from haotian.config import _default_codex_collection_skill_root
 from haotian.config import _default_codex_skill_roots
 from haotian.config import _default_codex_managed_skill_root
 from haotian.config import get_settings
@@ -33,12 +34,14 @@ def test_settings_default_to_local_run_artifact_paths(monkeypatch) -> None:
 def test_settings_support_semicolon_separated_codex_skill_roots_and_audit_script(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CODEX_SKILL_ROOTS", f" {tmp_path / 'skills-a'} ; {tmp_path / 'skills-b'} ")
     monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", str(tmp_path / "managed"))
+    monkeypatch.setenv("CODEX_COLLECTION_SKILL_ROOT", str(tmp_path / "collections"))
     monkeypatch.setenv("SKILL_AUDIT_SCRIPT", str(tmp_path / "audit_skill.py"))
 
     settings = Settings.from_env()
 
     assert list(settings.codex_skill_roots) == [tmp_path / "skills-a", tmp_path / "skills-b"]
     assert settings.codex_managed_skill_root == tmp_path / "managed"
+    assert settings.codex_collection_skill_root == tmp_path / "collections"
     assert settings.skill_audit_script == tmp_path / "audit_skill.py"
 
 
@@ -48,6 +51,7 @@ def test_get_settings_normalizes_codex_skill_paths(monkeypatch, tmp_path) -> Non
     monkeypatch.chdir(first_cwd)
     monkeypatch.setenv("CODEX_SKILL_ROOTS", "skills-a;skills-b")
     monkeypatch.setenv("CODEX_MANAGED_SKILL_ROOT", "managed")
+    monkeypatch.setenv("CODEX_COLLECTION_SKILL_ROOT", "collections")
     monkeypatch.setenv("SKILL_AUDIT_SCRIPT", "scripts/audit_skill.py")
     get_settings.cache_clear()
     try:
@@ -58,6 +62,7 @@ def test_get_settings_normalizes_codex_skill_paths(monkeypatch, tmp_path) -> Non
             (PROJECT_ROOT / "skills-b").resolve(),
         )
         assert settings.codex_managed_skill_root == (PROJECT_ROOT / "managed").resolve()
+        assert settings.codex_collection_skill_root == (PROJECT_ROOT / "collections").resolve()
         assert settings.skill_audit_script == (PROJECT_ROOT / "scripts/audit_skill.py").resolve()
     finally:
         get_settings.cache_clear()
@@ -71,9 +76,11 @@ def test_get_settings_autodiscovers_skill_sync_defaults(monkeypatch, tmp_path) -
     audit_script.write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.delenv("CODEX_SKILL_ROOTS", raising=False)
     monkeypatch.delenv("CODEX_MANAGED_SKILL_ROOT", raising=False)
+    monkeypatch.delenv("CODEX_COLLECTION_SKILL_ROOT", raising=False)
     monkeypatch.delenv("SKILL_AUDIT_SCRIPT", raising=False)
     monkeypatch.setattr("haotian.config._default_codex_skill_roots", lambda: (skill_root.resolve(),))
     monkeypatch.setattr("haotian.config._default_codex_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr("haotian.config._default_codex_collection_skill_root", lambda: tmp_path / "collections")
     monkeypatch.setattr("haotian.config._default_skill_audit_script", lambda: audit_script.resolve())
     get_settings.cache_clear()
     try:
@@ -81,6 +88,7 @@ def test_get_settings_autodiscovers_skill_sync_defaults(monkeypatch, tmp_path) -
 
         assert settings.codex_skill_roots == (skill_root.resolve(),)
         assert settings.codex_managed_skill_root == managed_root.resolve()
+        assert settings.codex_collection_skill_root == (tmp_path / "collections").resolve()
         assert settings.skill_audit_script == audit_script.resolve()
     finally:
         get_settings.cache_clear()
@@ -88,6 +96,10 @@ def test_get_settings_autodiscovers_skill_sync_defaults(monkeypatch, tmp_path) -
 
 def test_default_codex_managed_skill_root_uses_e_drive() -> None:
     assert _default_codex_managed_skill_root() == Path("E:/CodexHome/skills/haotian-managed")
+
+
+def test_default_codex_collection_skill_root_uses_non_scanned_e_drive_source_dir() -> None:
+    assert _default_codex_collection_skill_root() == Path("E:/CodexHome/skill-sources/haotian-collections")
 
 
 def test_default_codex_skill_roots_include_real_superpowers_root_when_present() -> None:
@@ -173,9 +185,11 @@ def test_docs_mention_skill_sync_report_and_skill_sync_configuration() -> None:
     assert "skill-sync-report.json" in readme
     assert "CODEX_SKILL_ROOTS" in env_example
     assert "CODEX_MANAGED_SKILL_ROOT" in env_example
+    assert "CODEX_COLLECTION_SKILL_ROOT" in env_example
     assert "SKILL_AUDIT_SCRIPT" in env_example
     assert "如果要真正安装新的 Haotian-managed skill，至少需要：" in ops_doc
     assert "- `CODEX_MANAGED_SKILL_ROOT`" in ops_doc
+    assert "- `CODEX_COLLECTION_SKILL_ROOT`" in ops_doc
     assert "- `SKILL_AUDIT_SCRIPT`" in ops_doc
     assert (
         "其中 `CODEX_SKILL_ROOTS` 可选；它主要用于扫描和对齐当前机器上已经安装的 skill，不配置时仍然可以把新的审计通过 skill 安装到 `CODEX_MANAGED_SKILL_ROOT`。"

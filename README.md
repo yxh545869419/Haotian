@@ -105,6 +105,7 @@ python start_haotian.py --date 2026-03-23
 - `RUN_DIR`：分阶段工件目录，默认 `./data/runs`
 - `CODEX_SKILL_ROOTS`：现有本机 Codex skill 根目录，多个路径用分号分隔
 - `CODEX_MANAGED_SKILL_ROOT`：Haotian 托管的新 skill 安装目录
+- `CODEX_COLLECTION_SKILL_ROOT`：Haotian 归档 skill collection 源包的目录；不要配置为 Codex 扫描根
 - `SKILL_AUDIT_SCRIPT`：`skill-audit-guard` 的 `audit_skill.py` 路径，用于安装前审计
 
 当前不需要这些旧配置：
@@ -180,7 +181,8 @@ finalize 阶段现在还会自动做两件事：
 另外还会执行一次确定性的 skill sync：
 
 - 先扫描 `CODEX_SKILL_ROOTS` 中已安装的本机 skill
-- 对可整合的 skill 候选生成 Haotian-managed wrapper，并在审计通过后安装到 `CODEX_MANAGED_SKILL_ROOT`
+- 对可整合的 skill 候选复制完整包，并在审计通过后安装到 `CODEX_MANAGED_SKILL_ROOT`
+- 对包含大量 skill 的 collection 仓库，先把源包归档到 `CODEX_COLLECTION_SKILL_ROOT`，再只把 canonical skill 暴露到 `CODEX_MANAGED_SKILL_ROOT`
 - 所有动作会写入 `skill-sync-report.json`
 
 最终生成的 Markdown / JSON 报告现在分成两层：

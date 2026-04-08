@@ -29,6 +29,7 @@ class InstalledSkillRecord:
     managed_source_repo_full_name: str | None = None
     managed_wrapper_slug: str | None = None
     managed_relative_root: str | None = None
+    managed_install_scope: str | None = None
 
 
 class CodexSkillInventoryService:
@@ -85,6 +86,7 @@ class CodexSkillInventoryService:
                     managed_source_repo_full_name=self._metadata_value(metadata, "source_repo_full_name"),
                     managed_wrapper_slug=self._safe_wrapper_slug(self._metadata_value(metadata, "slug")),
                     managed_relative_root=self._metadata_value(metadata, "relative_root"),
+                    managed_install_scope=self._metadata_value(metadata, "install_scope"),
                 )
 
         return inventory
